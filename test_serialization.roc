@@ -1,36 +1,67 @@
 app [main!] {
-    pf: platform "https://github.com/growthagent/basic-cli/releases/download/0.27.0/G-A6F5ny0IYDx4hmF3t_YPHUSR28c9ZXMBnh0FEJjwk.tar.br",
+    pf: platform "../basic-cli-zig/platform/main.roc",
     carousel: "package/main.roc",
-    json: "https://github.com/lukewilliamboswell/roc-json/releases/download/0.12.0/1trwx8sltQ-e9Y2rOB4LWUWLS_sFVyETK8Twl0i9qpw.tar.gz",
 }
 
-import pf.Arg
+import pf.Stdout
 import carousel.Carousel
-import json.Json
 
-## Regression guard, run via `roc test test_serialization.roc`.
+## Regression guard, run via `roc build test_serialization.roc` and executing
+## the resulting binary (expects in modules with cross-package imports do not
+## run under `roc test` at this time, so this is a small app instead).
 ##
 ## `Carousel.State` must stay JSON-encodable AND decodable: consumers embed it
 ## in page models that round-trip through SSR (the server encodes the model to
 ## JSON; the client decodes it). A tag union anywhere in `State`/`Config` makes
-## `Decoding` underivable — roc cannot derive `Decoding` for tag unions — which
-## panics the consumer's build with `DeriveError(Underivable)` and explodes WASM
-## compile times (a 15s Portal build became a 7+ minute timeout). Keep `State`
+## the JSON codec underivable, which breaks the consumer's build. Keep `State`
 ## and `Config` flat (scalars/records only, no tag-union fields).
 ##
-## This lives in a standalone test app rather than an inline `expect` in the
-## package so the carousel package itself need not depend on roc-json.
-main! : List Arg.Arg => Result {} _
-main! = |_args| Ok({})
+## Notes on the builtin Json module (which replaced roc-json): records that
+## contain `F64` fields must be encoded with `Json.to_str_try` (plain `to_str`
+## is unavailable because NaN/Infinity have no JSON representation), and both
+## `Json.parse` and `Json.to_str_try` need fully concrete types at the call
+## site, hence the annotations below.
+main! : List(Str) => Try({}, _)
+main! = |_args| {
+    report!("Config JSON round-trip", config_round_trip({}))?
+    report!("State JSON round-trip", state_round_trip({}))?
+    Ok({})
+}
 
-expect
-    when Carousel.init({ id: "guard", config: Carousel.default_config, slide_count: 3 }) is
-        Ok(state) ->
-            encoded = Encode.to_bytes(state, Json.utf8)
-            decoded : Result Carousel.State _
-            decoded = Decode.from_bytes(encoded, Json.utf8)
-            when decoded is
-                Ok(restored) -> restored.active_index == state.active_index and restored.slide_count == state.slide_count
-                Err(_) -> Bool.false
+report! : Str, Try({}, Str) => Try({}, _)
+report! = |label, result|
+    match result {
+        Ok({}) => Stdout.line!("PASS: ${label}")
+        Err(reason) => {
+            Stdout.line!("FAIL: ${label} (${reason})")?
+            Err(Exit(1))
+        }
+    }
 
-        Err(_) -> Bool.false
+config_round_trip : {} -> Try({}, Str)
+config_round_trip = |{}| {
+    config = Carousel.default_config
+    encoded = Json.to_str_try(config).map_err(|_| "Config failed to encode")?
+    decoded : Try(Carousel.Config, _)
+    decoded = Json.parse(encoded)
+    restored = decoded.map_err(|_| "Config failed to decode")?
+    if restored == config {
+        Ok({})
+    } else {
+        Err("Config did not round-trip faithfully")
+    }
+}
+
+state_round_trip : {} -> Try({}, Str)
+state_round_trip = |{}| {
+    state = Carousel.init({ id: "guard", config: Carousel.default_config, slide_count: 3 }).map_err(|_| "Carousel.init failed")?
+    encoded = Json.to_str_try(state).map_err(|_| "State failed to encode")?
+    decoded : Try(Carousel.State, _)
+    decoded = Json.parse(encoded)
+    restored = decoded.map_err(|_| "State failed to decode")?
+    if restored == state {
+        Ok({})
+    } else {
+        Err("State did not round-trip faithfully")
+    }
+}
