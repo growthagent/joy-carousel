@@ -1,0 +1,174 @@
+name: Release
+
+# Tag driven release flow:
+#
+#   git tag 0.8.0 && git push origin 0.8.0
+#
+# Two lanes, drawn top and bottom in the graph.
+#
+# Required is the one check a release needs: the flake's compiler at
+# --opt=speed running roc check, roc test, the bundle sanity check and
+# ./tests.roc, which is the probes and the whole browser suite. Green there
+# bundles the package and its docs with that same compiler and creates a DRAFT
+# release with starter notes. A human presses Publish.
+#
+# Optional is the advisory board, which may be red without blocking anything.
+# The suite on every operating system, on each nightly worth asking about,
+# which is the latest Roc and the Roc the previous release recommends (the
+# second is skipped when it is the same one), from this checkout and from the
+# drafted bundle the way a consumer will get it. Speed on the latest Roc and
+# speed on the recommended Roc are calls of their own because a red leg
+# reddens its whole call, and the compatible Roc is picked from those results:
+# the newest nightly that passed speed from both the checkout and the bundle,
+# preferring the latest. It is written into the notes' "Compatible with:"
+# line. When none passed, the notes say nothing is verified yet, and the daily
+# workflow fills the line in on the first green morning. The other backends
+# run for information only.
+#
+# Read the board, then decide: publish, or throw the run away by deleting its
+# draft. Publishing deploys the docs.
+
+on:
+  push:
+    tags:
+      - '[0-9]*'
+  # Re-run for an existing tag: pick the tag as the ref when dispatching.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Required lane.
+
+  test:
+    name: Required
+    uses: niclas-ahden/roc-workflows/.github/workflows/test.yml@v3
+
+  draft:
+    name: Draft
+    needs: test
+    permissions:
+      contents: write
+    uses: niclas-ahden/roc-workflows/.github/workflows/draft-release.yml@v3
+
+  # Optional lane.
+
+  # Looks up the latest Roc nightly and the one the previous release
+  # recommends, once, so every leg below tests the same pair.
+  roc-versions:
+    name: 'Optional: look up Roc versions'
+    uses: niclas-ahden/roc-workflows/.github/workflows/resolve-versions.yml@v3
+
+  latest-roc:
+    name: 'Optional: latest Roc'
+    needs: roc-versions
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.nightly }}
+      label: Tests
+      node: true
+      setup: .github/scripts/setup.sh
+
+  latest-roc-other-backends:
+    name: 'Optional: latest Roc, other backends'
+    needs: roc-versions
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.nightly }}
+      label: Tests
+      opts: '["dev", "size"]'
+      node: true
+      setup: .github/scripts/setup.sh
+
+  recommended-roc:
+    name: 'Optional: recommended Roc'
+    needs: roc-versions
+    if: needs.roc-versions.outputs.recommended != ''
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.recommended }}
+      label: Tests
+      node: true
+      setup: .github/scripts/setup.sh
+
+  recommended-roc-other-backends:
+    name: 'Optional: recommended Roc, other backends'
+    needs: roc-versions
+    if: needs.roc-versions.outputs.recommended != ''
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.recommended }}
+      label: Tests
+      opts: '["dev", "size"]'
+      node: true
+      setup: .github/scripts/setup.sh
+
+  # The consumer's path. roc downloads, hash checks and unbundles the drafted
+  # bundle, then the suite runs against it. It catches packaging bugs, and it
+  # is the half of the compatibility claim that tests what people install.
+  bundle-on-latest-roc:
+    name: 'Optional: bundle on latest Roc'
+    needs: [draft, roc-versions]
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.nightly }}
+      label: Tests
+      bundle-artifact: ${{ needs.draft.outputs.artifact }}
+      setup: .github/scripts/setup.sh
+
+  bundle-on-recommended-roc:
+    name: 'Optional: bundle on recommended Roc'
+    needs: [draft, roc-versions]
+    if: needs.roc-versions.outputs.recommended != ''
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.recommended }}
+      label: Tests
+      bundle-artifact: ${{ needs.draft.outputs.artifact }}
+      setup: .github/scripts/setup.sh
+
+  # A duplicate recommended Roc was resolved to empty, so its verdict lives in
+  # the latest Roc legs.
+  compatible-roc:
+    name: 'Optional: pick the compatible Roc'
+    needs: [roc-versions, latest-roc, recommended-roc, bundle-on-latest-roc, bundle-on-recommended-roc]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    outputs:
+      nightly: ${{ steps.pick.outputs.nightly }}
+    steps:
+      - id: pick
+        env:
+          LATEST: ${{ needs.roc-versions.outputs.nightly }}
+          RECOMMENDED: ${{ needs.roc-versions.outputs.recommended }}
+          LATEST_OK: ${{ needs.latest-roc.result == 'success' && needs.bundle-on-latest-roc.result == 'success' }}
+          RECOMMENDED_OK: ${{ needs.recommended-roc.result == 'success' && needs.bundle-on-recommended-roc.result == 'success' }}
+        run: |
+          nightly=
+          if [ "$LATEST_OK" = true ]; then
+            nightly=$LATEST
+          elif [ "$RECOMMENDED_OK" = true ]; then
+            nightly=$RECOMMENDED
+          fi
+          echo "nightly=$nightly" >> "$GITHUB_OUTPUT"
+          if [ -n "$nightly" ]; then
+            echo "compatible with $nightly"
+          else
+            echo "::warning::no nightly passed speed from both the checkout and the bundle, so the notes will name none"
+          fi
+
+  release-notes:
+    name: 'Optional: write it into the notes'
+    needs: [draft, compatible-roc]
+    if: ${{ !cancelled() && needs.draft.result == 'success' && needs.compatible-roc.outputs.nightly != '' }}
+    permissions:
+      contents: write
+    uses: niclas-ahden/roc-workflows/.github/workflows/name-nightly.yml@v3
+    with:
+      release: ${{ github.ref_name }}
+      nightly: ${{ needs.compatible-roc.outputs.nightly }}

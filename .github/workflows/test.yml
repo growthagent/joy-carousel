@@ -1,0 +1,48 @@
+name: Test
+
+# Two lanes. Required is the one check a release needs, and Optional is
+# everything else, which may be red without holding anything up.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The checks shared by every Roc package of ours, under the compiler the
+  # flake pins, which is the one the dev shell hands you: roc check, roc test,
+  # a bundle sanity check and ./tests.roc, which is the probes and the whole
+  # browser suite running under `nix develop`.
+  test:
+    name: Required
+    uses: niclas-ahden/roc-workflows/.github/workflows/test.yml@v3
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+  # Looks up the newest Roc nightly, once, so every leg below tests the same
+  # one.
+  roc-versions:
+    name: 'Optional: look up Roc versions'
+    uses: niclas-ahden/roc-workflows/.github/workflows/resolve-versions.yml@v3
+
+  # The newest downloaded nightly on every operating system, because that is
+  # the compiler a user of the package has. Every backend runs, so we see the
+  # day one breaks, or the day one goes green. `interpreter` is left out: it
+  # only targets the native host, and the test client builds with
+  # --target=wasm32. Nothing reads the result, so one call covers them all.
+  latest-roc:
+    name: 'Optional: latest Roc'
+    needs: roc-versions
+    uses: niclas-ahden/roc-workflows/.github/workflows/suite.yml@v3
+    with:
+      roc: ${{ needs.roc-versions.outputs.nightly }}
+      label: Tests
+      opts: '["speed", "dev", "size"]'
+      node: true
+      setup: .github/scripts/setup.sh
