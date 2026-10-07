@@ -1,1418 +1,934 @@
-import html.Html exposing [Html]
+import html.Html
 import html.Attribute
+import SlidesPerView
 
-Carousel := [].{
-    ## Carousel configuration options.
+## A carousel of slides that the user swipes, drags or steps through. It holds
+## its slides, so the slide count and the slides it renders can never
+## disagree, and the active slide is always one of them. Its state is hidden:
+## create it with [new], change it with [update] and [set_slides], read it
+## with the accessors and render it with [view].
+##
+## ```
+## model = { games: Carousel.new({ id: "games", slides: ["Diablo II", "Quake"], label: Labelled("Games") }) }
+##
+## # update
+## Games(event) => { ..model, games: model.games.update(event) }
+##
+## # render
+## model.games.view(|name, _index| Html.div([], [Html.text(name)]), |event| Games(event))
+## ```
+Carousel(slide) :: {
+    id : Str,
+    items : List(slide),
+    position : U64,
+    # A press is not a drag until it moves, see `drag_start_px`.
+    drag : [Resting, Pressed({ start_x : F64 }), Dragging({ start_x : F64, offset_px : F64 })],
+    transition : [Slide, Fade],
+    slides_per_view : SlidesPerView,
+    navigation : [NoButtons, Buttons({ previous : Str, next : Str })],
+    at_ends : [Stop, Wrap],
+    wraps : [Slide, Jump],
+    # The track took its place without a transition: a wrap that `wraps:
+    # Jump` made instant. The next move animates again.
+    instant : Bool,
+    label : [Labelled(Str), LabelledBy(Str)],
+    role : [Region, Group],
+    slide_label : Str,
+    drag_threshold_px : U32,
+    duration_ms : U32,
+}.{
+    ## What [new] takes. `id`, `slides` and `label` are required. Every other
+    ## field has a default, which applies when the record is written inline at
+    ## the call:
     ##
-    ## ```
-    ## config = { ..Carousel.default_config, navigation: Bool.True, drag_threshold_px: 100 }
-    ## ```
-    ##
-    ## - `is_fade`: How the carousel moves between slides. `Bool.False` (the default)
-    ##   slides a horizontal track, `Bool.True` cross-fades, stacking the slides and
-    ##   fading the active window in on top. Both honour `slides_per_view`.
-    ## - `slides_per_view`: Number of slides visible at once. `1.0` for full-width
-    ##   slides, `2.0` for half-width, or `1.5` to show a partial next slide as a
-    ##   preview. Must be greater than 0 (validated at [init]).
-    ## - `initial_slide`: Zero-indexed starting slide.
-    ## - `navigation`: Show prev/next buttons.
-    ## - `drag_threshold_px`: Minimum drag distance in pixels before a swipe registers.
-    ## - `animation_duration_ms`: Transition duration in milliseconds (slide movement or fade).
-    ##
-    ## These fields are deliberately flat scalars (no tag unions) so that `Config`
-    ## can be JSON-encoded/decoded (Roc cannot do that for tag unions at this time).
-    Config : {
-        is_fade : Bool,
-        slides_per_view : F64,
-        initial_slide : U64,
-        navigation : Bool,
-        drag_threshold_px : U64,
-        animation_duration_ms : U64,
-    }
-
-    ## Default configuration: horizontal slide transition with 1 slide per view, no navigation
-    ## buttons, 50px drag threshold, 300ms animation.
-    default_config : Config
-    default_config = {
-        is_fade: Bool.False,
-        slides_per_view: 1.0,
-        initial_slide: 0,
-        navigation: Bool.False,
-        drag_threshold_px: 50,
-        animation_duration_ms: 300,
-    }
-
-    ## Create with [init], update with [update], render with [view].
-    State : {
+    ## - `id`: the carousel element's `id`, for CSS and tests. The element
+    ##   that holds the slides gets the `id` `<id>-slides`.
+    ## - `slides`: the slides, in order. An empty list is fine, a carousel
+    ##   can get its slides later through [set_slides].
+    ## - `label`: the carousel's accessible name, which the WAI-ARIA carousel
+    ##   pattern asks for. `Labelled("Reviews")` names it, and
+    ##   `LabelledBy("reviews-heading")` names it after the visible heading
+    ##   with that `id`.
+    ## - `role`: `Region` (default) makes the carousel a landmark that screen
+    ##   reader users can jump to. `Group` suits a carousel that a page has
+    ##   many of, like the photos on every product card.
+    ## - `transition`: `Slide` (default) moves a horizontal track, `Fade`
+    ##   cross-fades the slides in place.
+    ## - `slides_per_view`: how many slides show at once (default one), see
+    ##   [SlidesPerView].
+    ## - `navigation`: `NoButtons` (default), or `Buttons` with the
+    ##   accessible names of the previous and next buttons, in the page's
+    ##   language: `Buttons({ previous: "Previous slide", next: "Next slide" })`.
+    ## - `at_ends`: `Stop` (default) keeps the first and last slides where
+    ##   they are, `Wrap` steps from the end to the start and back.
+    ## - `wraps`: how a wrap looks with the `Slide` transition. `Slide`
+    ##   (default) moves the track back across every slide in between, `Jump`
+    ##   puts the slide at the other end in place at once. When the other
+    ##   end is the neighbouring position, as with two slides, a wrap is a
+    ##   step to the neighbour, and slides either way.
+    ##   `Jump` suits slides that are only rendered near the active one, like
+    ##   a gallery that loads the neighbouring pictures only, where sliding
+    ##   across the track would sweep past empty slides.
+    ## - `slide_label`: each slide's accessible name, in the page's language.
+    ##   `{number}` stands for the slide's position counting from 1 and
+    ##   `{count}` for how many slides there are. The default is
+    ##   `"{number} / {count}"`, which names the third of five slides "3 / 5".
+    ## - `drag_threshold_px`: how far a drag has to go to change the slide
+    ##   (default 50).
+    ## - `duration_ms`: how long a slide change animates (default 300).
+    Options(slide) := {
         id : Str,
-        active_index : U64,
-        slide_count : U64,
-        is_dragging : Bool,
-        start_x : F64,
-        drag_offset_px : F64,
-        config : Config,
+        slides : List(slide),
+        label : [Labelled(Str), LabelledBy(Str)],
+        role : [Region, Group] ?? Region,
+        transition : [Slide, Fade] ?? Slide,
+        slides_per_view : SlidesPerView ?? SlidesPerView.one,
+        navigation : [NoButtons, Buttons({ previous : Str, next : Str })] ?? NoButtons,
+        at_ends : [Stop, Wrap] ?? Stop,
+        wraps : [Slide, Jump] ?? Slide,
+        slide_label : Str ?? "{number} / {count}",
+        drag_threshold_px : U32 ?? 50,
+        duration_ms : U32 ?? 300,
     }
 
-    ## Errors returned by [init] for invalid configuration.
-    InitError : [
-        NoSlides,
-        InvalidSlidesPerView,
-        InitialSlideOutOfBounds({ initial_slide : U64, slide_count : U64 }),
-        InvalidCarouselId(Str),
-    ]
+    ## A carousel on its first slide.
+    new : Options(slide) -> Carousel(slide)
+    new = |{ id, slides, label, role, transition, slides_per_view, navigation, at_ends, wraps, slide_label, drag_threshold_px, duration_ms }| {
+        id,
+        items: slides,
+        position: 0,
+        drag: Resting,
+        transition,
+        slides_per_view,
+        navigation,
+        at_ends,
+        wraps,
+        instant: Bool.False,
+        label,
+        role,
+        slide_label,
+        drag_threshold_px,
+        duration_ms,
+    }
 
-    ## Create carousel state for the given number of slides.
-    ## The `id` must be non-empty and must not contain `|`. It is stored in the state
-    ## for use by [view] and [encode_event].
+    ## What a carousel's [view] sends through the `to_msg` the app passes, for
+    ## the app to hand back to [update]. Navigation the app renders itself
+    ## sends [next], [previous] or [go_to]:
     ##
     ## ```
-    ## match Carousel.init({ id: "my-carousel", config: config, slide_count: slides.len() }) {
-    ##     Ok(state) => { carousel_state: state }
-    ##     Err(NoSlides) => crash "Need at least one slide"
-    ##     Err(_) => crash "Invalid config"
-    ## }
+    ## Html.button([Attribute.on_click(Games(Carousel.next))], [Html.text("Next")])
     ## ```
-    init : { id : Str, config : Config, slide_count : U64 } -> Try(State, InitError)
-    init = |args| {
-        carousel_id = args.id
-        config = args.config
-        slide_count = args.slide_count
-        if Str.is_empty(carousel_id) {
-            Err(InvalidCarouselId(carousel_id))
-        } else if carousel_id.contains("|") {
-            Err(InvalidCarouselId(carousel_id))
-        } else if slide_count == 0 {
-            Err(NoSlides)
-        } else if config.slides_per_view <= 0.0 {
-            Err(InvalidSlidesPerView)
-        } else if config.initial_slide >= slide_count {
-            Err(InitialSlideOutOfBounds({ initial_slide: config.initial_slide, slide_count: slide_count }))
-        } else {
-            Ok(
-                {
-                    id: carousel_id,
-                    active_index: config.initial_slide,
-                    slide_count: slide_count,
-                    is_dragging: Bool.False,
-                    start_x: 0.0,
-                    drag_offset_px: 0.0,
-                    config: config,
-                },
-            )
-        }
+    Event :: {
+        action : [
+            # The pointer's horizontal client coordinate, and the button,
+            # since only the primary button drags.
+            PointerDown({ x : F64, button : U8 }),
+            PointerMove(F64),
+            PointerUp,
+            PointerLeave,
+            # The browser took the gesture over, a vertical scroll for one.
+            PointerCancel,
+            # The browser starting to drag an image or a link inside a slide,
+            # which the view suppresses so the swipe keeps working.
+            NativeDragStart,
+            Previous,
+            Next,
+            GoTo(U64),
+        ],
     }
 
-    ## Update the slide count after initialization.
-    ## Returns `Err(NoSlides)` if `new_count` is 0 (same as [init]).
-    ## Clamps the active index if it would be out of bounds for the new count.
-    set_slide_count : State, U64 -> Try(State, [NoSlides])
-    set_slide_count = |state, new_count|
-        if new_count == 0 {
-            Err(NoSlides)
-        } else {
-            clamped_index =
-                if state.active_index >= new_count {
-                    new_count - 1
+    ## Step to the next slide, like the next button.
+    next : Event
+    next = { action: Next }
+
+    ## Step to the previous slide, like the previous button.
+    previous : Event
+    previous = { action: Previous }
+
+    ## Go to the slide at `index`. Near the end of a carousel that shows
+    ## several slides at once, the view stops where the last slide is fully
+    ## in it, which brings the slide at `index` into view too. An index past
+    ## the last slide changes nothing.
+    go_to : U64 -> Event
+    go_to = |index| { action: GoTo(index) }
+
+    ## Apply an event.
+    update : Carousel(slide), Event -> Carousel(slide)
+    update = |carousel, event|
+        match event.action {
+            PointerDown({ x, button }) =>
+                if button == 0 {
+                    { ..carousel, drag: Pressed({ start_x: x }) }
                 } else {
-                    state.active_index
+                    carousel
                 }
-            Ok({ ..state, slide_count: new_count, active_index: clamped_index })
-        }
 
-    ## Carousel events. Decoded from DOM events via [decode_event].
-    Event : [
-        TouchStart(F64, F64),
-        TouchMove(F64, F64),
-        TouchEnd(F64, F64),
-        MouseDown(F64, F64),
-        MouseMove(F64, F64),
-        MouseUp(F64, F64),
-        MouseLeave,
-        PrevSlide,
-        NextSlide,
-        GoToSlide(U64),
-    ]
-
-    ## Encode a navigation event to a handler string for use with joy-html event attributes.
-    ## For custom navigation buttons rendered outside of [view].
-    ## The carousel ID (validated at [init]) is read from the state.
-    ##
-    ## ```
-    ## Attribute.on_click(Carousel.encode_event(model.carousel_state, PrevSlide))
-    ## ```
-    encode_event : State, [PrevSlide, NextSlide, GoToSlide(U64)] -> Str
-    encode_event = |state, event| {
-        # Keep in sync with format_event (duplicated due to Roc's closed tag unions)
-        base =
-            match event {
-                PrevSlide => "PrevSlide"
-                NextSlide => "NextSlide"
-                GoToSlide(idx) => "GoToSlide|${idx.to_str()}"
-            }
-        "Carousel|${state.id}|${base}"
-    }
-
-    format_event : Str, [TouchStart, TouchMove, TouchEnd, MouseDown, MouseMove, MouseUp, MouseLeave, PrevSlide, NextSlide, GoToSlide(U64)] -> Str
-    format_event = |carousel_id, event| {
-        # TODO: Do this better with typed events in Roc v0.1
-        base =
-            match event {
-                TouchStart => "TouchStart"
-                TouchMove => "TouchMove"
-                TouchEnd => "TouchEnd"
-                MouseDown => "MouseDown"
-                MouseMove => "MouseMove"
-                MouseUp => "MouseUp"
-                MouseLeave => "MouseLeave"
-                PrevSlide => "PrevSlide"
-                NextSlide => "NextSlide"
-                GoToSlide(idx) => "GoToSlide|${idx.to_str()}"
-            }
-        "Carousel|${carousel_id}|${base}"
-    }
-
-    ## Decode a carousel event from the Joy event name and payload.
-    ## Returns both the carousel ID and the event, allowing apps with multiple carousels
-    ## to route events to the correct instance.
-    ##
-    ## ```
-    ## match Carousel.decode_event(event_name, payload) {
-    ##     Ok(decoded) => Action.update({ ..model, carousel_state: Carousel.update(model.carousel_state, decoded.event) })
-    ##     Err(_) => Action.none
-    ## }
-    ## ```
-    decode_event : Str, List(U8) -> Try({ id : Str, event : Event }, [UnknownEvent(Str)])
-    decode_event = |raw, payload|
-        match Str.find_first(raw, "|") {
-            Ok(first) =>
-                if first.before == "Carousel" {
-                    match Str.find_first(first.after, "|") {
-                        Ok(second) =>
-                            match Carousel.parse_event_str(second.after, payload) {
-                                Ok(event) => Ok({ id: second.before, event: event })
-                                Err(_) => Err(UnknownEvent(raw))
-                            }
-                        Err(_) => Err(UnknownEvent(raw))
-                    }
-                } else {
-                    Err(UnknownEvent(raw))
-                }
-            _ => Err(UnknownEvent(raw))
-        }
-
-    parse_event_str : Str, List(U8) -> Try(Event, [UnknownEvent(Str)])
-    parse_event_str = |event_str, payload|
-        match event_str {
-            "TouchStart" => Ok(Carousel.parse_coords(payload, |x, y| TouchStart(x, y)))
-            "TouchMove" => Ok(Carousel.parse_coords(payload, |x, y| TouchMove(x, y)))
-            "TouchEnd" => Ok(Carousel.parse_coords(payload, |x, y| TouchEnd(x, y)))
-            "MouseDown" => Ok(Carousel.parse_coords(payload, |x, y| MouseDown(x, y)))
-            "MouseMove" => Ok(Carousel.parse_coords(payload, |x, y| MouseMove(x, y)))
-            "MouseUp" => Ok(Carousel.parse_coords(payload, |x, y| MouseUp(x, y)))
-            "MouseLeave" => Ok(MouseLeave)
-            "PrevSlide" => Ok(PrevSlide)
-            "NextSlide" => Ok(NextSlide)
-            _ =>
-                match Str.find_first(event_str, "|") {
-                    Ok(parts) =>
-                        if parts.before == "GoToSlide" {
-                            match U64.from_str(parts.after) {
-                                Ok(idx) => Ok(GoToSlide(idx))
-                                Err(_) => Err(UnknownEvent(event_str))
-                            }
+            PointerMove(x) =>
+                match carousel.drag {
+                    Resting => carousel
+                    Pressed({ start_x }) =>
+                        if (x - start_x).abs() > drag_start_px(carousel) {
+                            { ..carousel, drag: Dragging({ start_x, offset_px: x - start_x }) }
                         } else {
-                            Err(UnknownEvent(event_str))
+                            carousel
                         }
-                    _ => Err(UnknownEvent(event_str))
+
+                    Dragging({ start_x, .. }) => { ..carousel, drag: Dragging({ start_x, offset_px: x - start_x }) }
+                }
+
+            PointerUp => finish_drag(carousel)
+
+            PointerLeave => finish_drag(carousel)
+
+            PointerCancel => { ..carousel, drag: Resting, instant: Bool.False }
+
+            NativeDragStart => carousel
+
+            Previous => step(carousel, Back)
+
+            Next => step(carousel, Forward)
+
+            GoTo(index) =>
+                if index < carousel.items.len() {
+                    { ..carousel, position: index.min(last_position(carousel)), instant: Bool.False }
+                } else {
+                    carousel
                 }
         }
 
-    parse_coords : List(U8), (F64, F64 -> Event) -> Event
-    parse_coords = |payload, to_event| {
-        coord_str = Str.from_utf8_lossy(payload)
-        match Str.find_first(coord_str, ",") {
-            Ok(parts) => {
-                x = F64.from_str(parts.before).ok_or(0.0)
-                y = F64.from_str(parts.after).ok_or(0.0)
-                to_event(x, y)
-            }
-            Err(_) => to_event(0.0, 0.0)
-        }
+    ## Replace the slides, keeping the active slide's index when the view can
+    ## still go there and going as far as it can otherwise.
+    set_slides : Carousel(slide), List(slide) -> Carousel(slide)
+    set_slides = |carousel, new_slides| {
+        replaced = { ..carousel, items: new_slides }
+        { ..replaced, position: replaced.position.min(last_position(replaced)) }
     }
 
-    ## Apply an event to the carousel state, returning the new state.
-    update : State, Event -> State
-    update = |state, event|
-        match event {
-            TouchStart(x, _y) | MouseDown(x, _y) =>
-                { ..state, is_dragging: Bool.True, start_x: x, drag_offset_px: 0.0 }
+    ## The slides, in order.
+    slides : Carousel(slide) -> List(slide)
+    slides = |carousel| carousel.items
 
-            TouchMove(x, _y) | MouseMove(x, _y) =>
-                if state.is_dragging {
-                    { ..state, drag_offset_px: x - state.start_x }
-                } else {
-                    state
-                }
+    ## How many slides the carousel has.
+    slide_count : Carousel(slide) -> U64
+    slide_count = |carousel| carousel.items.len()
 
-            TouchEnd(_x, _y) | MouseUp(_x, _y) => Carousel.finish_drag(state)
+    ## The index of the active slide, the first one in view. A carousel that
+    ## shows several slides at once stops where the last slide is fully in
+    ## view, so near the end the active index goes no further. 0 when there
+    ## are no slides.
+    active_index : Carousel(slide) -> U64
+    active_index = |carousel| carousel.position
 
-            MouseLeave => Carousel.finish_drag(state)
+    ## Whether [previous] would change the slide. With `at_ends: Wrap` it
+    ## does whenever there are more slides than fit in view.
+    has_previous : Carousel(slide) -> Bool
+    has_previous = |carousel| neighbour(carousel, Back).is_ok()
 
-            PrevSlide =>
-                if state.active_index > 0 {
-                    { ..state, active_index: state.active_index - 1 }
-                } else {
-                    state
-                }
+    ## Whether [next] would change the slide. With `at_ends: Wrap` it does
+    ## whenever there are more slides than fit in view.
+    has_next : Carousel(slide) -> Bool
+    has_next = |carousel| neighbour(carousel, Forward).is_ok()
 
-            NextSlide =>
-                if state.active_index < state.slide_count - 1 {
-                    { ..state, active_index: state.active_index + 1 }
-                } else {
-                    state
-                }
-
-            GoToSlide(idx) =>
-                if idx < state.slide_count {
-                    { ..state, active_index: idx }
-                } else {
-                    state
-                }
-        }
-
-    # Shared by TouchEnd, MouseUp and MouseLeave (arity differences keep
-    # MouseLeave out of their or-pattern).
-    finish_drag : State -> State
-    finish_drag = |state|
-        if state.is_dragging {
-            threshold = state.config.drag_threshold_px.to_f64()
-
-            new_index =
-                if state.drag_offset_px < (-threshold) and state.active_index < state.slide_count - 1 {
-                    state.active_index + 1
-                } else if state.drag_offset_px > threshold and state.active_index > 0 {
-                    state.active_index - 1
-                } else {
-                    state.active_index
-                }
-
-            { ..state, is_dragging: Bool.False, active_index: new_index, drag_offset_px: 0.0 }
-        } else {
-            state
-        }
-
-    calculate_slide_width : F64 -> F64
-    calculate_slide_width = |slides_per_view|
-        100.0 / slides_per_view
-
-    calculate_transform : { active_index : U64, slides_per_view : F64, is_dragging : Bool, drag_offset_px : F64 } -> Str
-    calculate_transform = |args| {
-        slide_width = Carousel.calculate_slide_width(args.slides_per_view)
-        base_translate_percent = -(args.active_index.to_f64() * slide_width)
-
-        if args.is_dragging {
-            "translate3d(calc(${base_translate_percent.to_str()}% + ${args.drag_offset_px.to_str()}px), 0, 0)"
-        } else {
-            "translate3d(${base_translate_percent.to_str()}%, 0, 0)"
-        }
-    }
-
-    calculate_transition : Bool, U64 -> Str
-    calculate_transition = |is_dragging, animation_duration_ms|
-        if is_dragging {
-            "none"
-        } else {
-            "transform ${animation_duration_ms.to_str()}ms ease-out"
-        }
-
-    nav_button_class : Str, Bool -> Str
-    nav_button_class = |base_class, is_disabled|
-        if is_disabled {
-            "${base_class} carousel-button-disabled"
-        } else {
-            base_class
-        }
-
-    # A fade slide is in the visible window when it sits at or after the active
-    # slide and within `slides_per_view` of it. For the default `1.0` this is just
-    # the active slide, `2.0` shows the active slide plus the next one, `1.5`
-    # shows the active slide plus a partial preview of the next. Slides outside
-    # the window stay transparent and are clipped by the carousel's `overflow:
-    # hidden`. Mirrors the visible range of slide mode.
-    fade_slide_in_window : U64, U64, F64 -> Bool
-    fade_slide_in_window = |index, active_index, slides_per_view|
-        index >= active_index and (index.to_f64() - active_index.to_f64()) < slides_per_view
-
-    fade_slide_class : U64, U64, F64 -> Str
-    fade_slide_class = |index, active_index, slides_per_view|
-        if Carousel.fade_slide_in_window(index, active_index, slides_per_view) {
-            "carousel-slide carousel-slide--fade carousel-slide--active"
-        } else {
-            "carousel-slide carousel-slide--fade"
-        }
-
-    # Horizontal position of a fade slide as a percentage of its own width, so each
-    # slide steps one slot to the right of the active one regardless of
-    # `slides_per_view`. The active slide sits at 0%, the next at 100% (flush to its
-    # right), earlier slides at negative offsets (off-screen left). Applied as an
-    # un-transitioned `translateX`, so only opacity animates. The window snaps into
-    # place while the slides cross-fade.
-    fade_slide_offset_percent : U64, U64 -> F64
-    fade_slide_offset_percent = |index, active_index|
-        (index.to_f64() - active_index.to_f64()) * 100.0
-
-    ## Render the carousel. The carousel ID is read from the state (set at [init]).
+    ## Render the carousel. `render_slide` gets each slide and its index and
+    ## renders it with the app's own message type, and `to_msg` wraps the
+    ## carousel's [Event]s in that type. An app with several carousels tells
+    ## them apart by the wrapper it passes to each.
     ##
-    ## The tree's message type is `Str`: every handler produces the same encoded
-    ## event string the old joy platform delivered as an event name. Embed the
-    ## carousel in a typed-message app with `Html.map` plus [decode_event].
-    ##
-    ## ```
-    ## slide_content = slides.map(|s| Html.div([], [Html.text(s)]))
-    ## Carousel.view(model.carousel_state, slide_content)
-    ## ```
-    view : State, List(Html(Str)) -> Html(Str)
-    view = |state, slides| {
-        carousel_id = state.id
+    ## Each slide sits in a group named by `slide_label`, and the slides
+    ## outside the visible window are `inert`, so neither the keyboard nor a
+    ## screen reader lands on a slide nobody can see. The slides sit in a
+    ## polite live region, so a screen reader reads the slide that comes into
+    ## view.
+    view : Carousel(slide), (slide, U64 -> Html(msg)), (Event -> msg) -> Html(msg)
+    view = |carousel, render_slide, to_msg| {
+        count = carousel.items.len()
+        slide_views = carousel.items.map_with_index(|item, index| slide_view(carousel, index, count, render_slide(item, index)))
+        slides_id = "${carousel.id}-slides"
 
-        wrapper =
-            if state.config.is_fade {
-                Carousel.fade_wrapper(state, slides, state.config.slides_per_view)
-            } else {
-                Carousel.sliding_wrapper(state, slides, state.config.slides_per_view)
-            }
+        # The WAI-ARIA carousel pattern makes the slides' container a polite
+        # live region for a carousel that does not rotate on its own.
+        live = [Attribute.id(slides_id), Attribute.aria("live", "polite"), Attribute.aria("atomic", "false")]
 
-        nav_buttons =
-            if state.config.navigation {
-                prev_disabled = state.active_index == 0
-                next_disabled = state.active_index >= state.slide_count - 1
-
-                prev_class = Carousel.nav_button_class("carousel-button-prev", prev_disabled)
-                next_class = Carousel.nav_button_class("carousel-button-next", next_disabled)
-
-                [
-                    Html.button([Attribute.class(prev_class), Attribute.type_("button"), Attribute.attribute("aria-label", "Previous slide"), Attribute.on_click(Carousel.format_event(carousel_id, PrevSlide))], []),
-                    Html.button([Attribute.class(next_class), Attribute.type_("button"), Attribute.attribute("aria-label", "Next slide"), Attribute.on_click(Carousel.format_event(carousel_id, NextSlide))], []),
-                ]
-            } else {
-                []
-            }
-
-        # NOTE: joy-zig message events carry no payload, so the drag handlers
-        # below deliver their event string without the pointer coordinates the
-        # old joy runtime appended. decode_event still accepts a coordinate
-        # payload (and defaults to 0,0 without one); wiring real coordinates
-        # back up is part of the pending joy-zig port (see MIGRATION.md).
-        Html.div(
-            [
-                Attribute.id(carousel_id),
-                Attribute.class("carousel"),
-                Attribute.on("touchstart", Carousel.format_event(carousel_id, TouchStart)),
-                Attribute.on("touchmove", Carousel.format_event(carousel_id, TouchMove)),
-                Attribute.on("touchend", Carousel.format_event(carousel_id, TouchEnd)),
-                Attribute.on("mousedown", Carousel.format_event(carousel_id, MouseDown)),
-                Attribute.on("mousemove", Carousel.format_event(carousel_id, MouseMove)),
-                Attribute.on("mouseup", Carousel.format_event(carousel_id, MouseUp)),
-                Attribute.on("mouseleave", Carousel.format_event(carousel_id, MouseLeave)),
-            ],
-            [wrapper].concat(nav_buttons),
-        )
-    }
-
-    sliding_wrapper : State, List(Html(Str)), F64 -> Html(Str)
-    sliding_wrapper = |state, slides, slides_per_view| {
-        slide_width = Carousel.calculate_slide_width(slides_per_view)
-
-        transform = Carousel.calculate_transform(
-            {
-                active_index: state.active_index,
-                slides_per_view: slides_per_view,
-                is_dragging: state.is_dragging,
-                drag_offset_px: state.drag_offset_px,
-            },
-        )
-
-        transition = Carousel.calculate_transition(state.is_dragging, state.config.animation_duration_ms)
-
-        wrapped_slides =
-            List.map_with_index(
-                slides,
-                |slide, _idx|
-                    Html.div([Attribute.class("carousel-slide"), Attribute.style([("width", "${slide_width.to_str()}%")])], [slide]),
-            )
-
-        Html.div(
-            [
-                Attribute.class("carousel-wrapper"),
-                Attribute.style([("transform", transform), ("transition", transition)]),
-            ],
-            wrapped_slides,
-        )
-    }
-
-    ## All slides share one grid cell and are positioned side by side with an
-    ## un-transitioned `translateX`. The slides in the active window (see
-    ## [fade_slide_in_window]) fade in on top while the rest stay transparent and
-    ## are clipped by the carousel's `overflow: hidden`. Each slide is sized to
-    ## `slides_per_view` (100% for the default `1.0`), matching slide mode, so the
-    ## window honours `slides_per_view`. `2.0` cross-fades two slides at a time,
-    ## `1.5` shows a partial preview. Because only opacity transitions, slides that
-    ## remain visible across a step snap to their new slot rather than sliding.
-    ## The container sizes itself to the largest slide, so no height management is
-    ## needed. Dragging changes slides on release (threshold-based) but has no
-    ## visual effect mid-drag.
-    fade_wrapper : State, List(Html(Str)), F64 -> Html(Str)
-    fade_wrapper = |state, slides, slides_per_view| {
-        slide_width = Carousel.calculate_slide_width(slides_per_view)
-
-        wrapped_slides =
-            List.map_with_index(
-                slides,
-                |slide, idx| {
-                    offset = Carousel.fade_slide_offset_percent(idx, state.active_index)
+        track =
+            match carousel.transition {
+                Slide =>
                     Html.div(
-                        [
-                            Attribute.class(Carousel.fade_slide_class(idx, state.active_index, slides_per_view)),
-                            Attribute.style(
-                                [
-                                    ("width", "${slide_width.to_str()}%"),
-                                    ("transform", "translateX(${offset.to_str()}%)"),
-                                ],
-                            ),
-                        ],
-                        [slide],
+                        live.concat(
+                            [
+                                Attribute.class("carousel-wrapper"),
+                                Attribute.style([("transform", track_transform(carousel)), ("transition", track_transition(carousel))]),
+                            ],
+                        ),
+                        slide_views,
                     )
-                },
-            )
+
+                Fade =>
+                    Html.div(
+                        live.concat(
+                            [
+                                Attribute.class("carousel-wrapper carousel-wrapper--fade"),
+                                # carousel.css reads this in each slide's opacity
+                                # transition. Set once here, it cascades to every slide.
+                                Attribute.style([("--carousel-fade-duration", "${carousel.duration_ms.to_str()}ms")]),
+                            ],
+                        ),
+                        slide_views,
+                    )
+            }
+
+        buttons =
+            match carousel.navigation {
+                NoButtons => []
+                Buttons(names) => [
+                    nav_button("carousel-button-prev", names.previous, slides_id, neighbour(carousel, Back).is_ok(), to_msg(Carousel.previous)),
+                    nav_button("carousel-button-next", names.next, slides_id, neighbour(carousel, Forward).is_ok(), to_msg(Carousel.next)),
+                ]
+            }
 
         Html.div(
             [
-                Attribute.class("carousel-wrapper carousel-wrapper--fade"),
-                # carousel.css reads this in each slide's opacity transition, set once here
-                # so it cascades to every slide.
-                Attribute.style([("--carousel-fade-duration", "${state.config.animation_duration_ms.to_str()}ms")]),
-            ],
-            wrapped_slides,
+                Attribute.id(carousel.id),
+                Attribute.class("carousel"),
+                # Without this, dragging an image or a link inside a slide
+                # starts the browser's own drag, which cancels the swipe.
+                Attribute.on("dragstart", to_msg({ action: NativeDragStart })).prevent_default(),
+            ]
+                .concat(landmark(carousel.role, carousel.label))
+                .concat(pointer_handlers(carousel.drag, to_msg)),
+            [track].concat(buttons),
         )
     }
 }
 
+## The position one step in `direction`, round the end when the carousel
+## wraps.
+neighbour : Carousel(slide), [Back, Forward] -> Try(U64, [NoNeighbour])
+neighbour = |carousel, direction| {
+    position = carousel.position
+    last = last_position(carousel)
+    wrapping =
+        match carousel.at_ends {
+            Wrap => last > 0
+            Stop => Bool.False
+        }
+    match direction {
+        Back =>
+            if position > 0 {
+                Ok(position - 1)
+            } else if wrapping {
+                Ok(last)
+            } else {
+                Err(NoNeighbour)
+            }
+
+        Forward =>
+            if position < last {
+                Ok(position + 1)
+            } else if wrapping {
+                Ok(0)
+            } else {
+                Err(NoNeighbour)
+            }
+    }
+}
+
+## The furthest the view goes: the position that brings the last slide fully
+## into view. With one slide per view that is the last slide. With more the
+## view stops short of it, so it never shows empty space past the end.
+last_position : Carousel(slide) -> U64
+last_position = |carousel| {
+    count = carousel.items.len()
+    if count == 0 {
+        0
+    } else {
+        # How many slides lie past the first view. The slack keeps a slides
+        # per view that is whole in all but rounding from adding a last step
+        # that barely moves.
+        beyond = count.to_f64() - carousel.slides_per_view.to_f64() - 0.000001
+        steps = if beyond > 0.0 beyond.ceiling_to_u64_try() ?? (count - 1) else 0
+        steps.min(count - 1)
+    }
+}
+
+## Where the view starts, in slides from the first: at the active slide, but
+## never past where the last slide is fully in view. Fractional when a slides
+## per view that is not whole reaches the end.
+view_start : Carousel(slide) -> F64
+view_start = |carousel| {
+    end = carousel.items.len().to_f64() - carousel.slides_per_view.to_f64()
+    F64.min(carousel.position.to_f64(), F64.max(0.0, end))
+}
+
+step : Carousel(slide), [Back, Forward] -> Carousel(slide)
+step = |carousel, direction|
+    match neighbour(carousel, direction) {
+        Ok(position) => { ..carousel, position, instant: jumps(carousel, position) }
+        Err(NoNeighbour) => carousel
+    }
+
+## Whether a step to `position` shows without a transition: a wrap that
+## `wraps: Jump` keeps from sliding across the slides in between. A step
+## is longer than one slide only when it wraps.
+jumps : Carousel(slide), U64 -> Bool
+jumps = |carousel, position| {
+    distance = if position > carousel.position position - carousel.position else carousel.position - position
+    match (carousel.wraps, carousel.transition) {
+        (Jump, Slide) => distance > 1
+        _ => Bool.False
+    }
+}
+
+## How far a press has to move to become a drag. Until then the track stays
+## where it is, so a press on a button lets a running slide change finish,
+## and a click on the content of a slide goes through. Never more than the
+## drag threshold, so every drag long enough to change the slide is a drag.
+drag_start_px : Carousel(slide) -> F64
+drag_start_px = |carousel| F64.min(5.0, carousel.drag_threshold_px.to_f64())
+
+## End a drag: past the threshold to the left is the next slide, past it to
+## the right the previous one, anything shorter stays. A press that never
+## moved was a click, which the content under it gets.
+finish_drag : Carousel(slide) -> Carousel(slide)
+finish_drag = |carousel|
+    match carousel.drag {
+        Resting => carousel
+        Pressed(_) => { ..carousel, drag: Resting }
+        Dragging(drag) => {
+            threshold = carousel.drag_threshold_px.to_f64()
+            rested = { ..carousel, drag: Resting, instant: Bool.False }
+            if drag.offset_px < 0.0 - threshold {
+                step(rested, Forward)
+            } else if drag.offset_px > threshold {
+                step(rested, Back)
+            } else {
+                rested
+            }
+        }
+    }
+
+## A press can start a drag at any time. The rest of a drag is only listened
+## for while a press lasts, so hovering over a carousel sends nothing.
+pointer_handlers : [Resting, Pressed({ start_x : F64 }), Dragging({ start_x : F64, offset_px : F64 })], (Carousel.Event -> msg) -> List(Attribute(msg))
+pointer_handlers = |drag, to_msg| {
+    press = Attribute.on_pointer_down(|e| to_msg({ action: PointerDown({ x: e.client_x, button: e.button }) }))
+    match drag {
+        Resting => [press]
+        Pressed(_) | Dragging(_) => [
+            press,
+            Attribute.on_pointer_move(|e| to_msg({ action: PointerMove(e.client_x) })),
+            Attribute.on_pointer_up(|_| to_msg({ action: PointerUp })),
+            Attribute.on_pointer_leave(|_| to_msg({ action: PointerLeave })),
+            Attribute.on_pointer_cancel(|_| to_msg({ action: PointerCancel })),
+        ]
+    }
+}
+
+## The carousel's role and accessible name. A region is a landmark, a group
+## is not.
+landmark : [Region, Group], [Labelled(Str), LabelledBy(Str)] -> List(Attribute(msg))
+landmark = |role, label| {
+    role_attribute =
+        match role {
+            Region => Attribute.role("region")
+            Group => Attribute.role("group")
+        }
+    name =
+        match label {
+            Labelled(text) => Attribute.aria("label", text)
+            LabelledBy(id) => Attribute.aria("labelledby", id)
+        }
+    [role_attribute, Attribute.aria("roledescription", "carousel"), name]
+}
+
+## A previous or next button, which controls the slides. One that would
+## change nothing is marked `aria-disabled` rather than disabled, so the
+## keyboard focus stays on it when a step reaches the end, and it keeps the
+## `carousel-button-disabled` class for styling. Pressing it changes nothing.
+nav_button : Str, Str, Str, Bool, msg -> Html(msg)
+nav_button = |class, name, slides_id, enabled, msg| {
+    unavailable = if enabled [] else [Attribute.aria("disabled", "true")]
+    Html.button(
+        [
+            Attribute.class(if enabled class else "${class} carousel-button-disabled"),
+            Attribute.type("button"),
+            Attribute.aria("label", name),
+            Attribute.aria("controls", slides_id),
+        ]
+            .concat(unavailable)
+            .concat([Attribute.on_click(msg)]),
+        [],
+    )
+}
+
+slide_view : Carousel(slide), U64, U64, Html(msg) -> Html(msg)
+slide_view = |carousel, index, count, content| {
+    slides_per_view = carousel.slides_per_view.to_f64()
+    start = view_start(carousel)
+    width = ("width", "${(100.0 / slides_per_view).to_str()}%")
+    shown = in_window(index, start, slides_per_view)
+    # While a drag runs the slides take no pointer events, so the release
+    # lands beside them. The click that follows goes to what the press and
+    # the release have in common, the carousel, and never reaches a button
+    # or a link in the slide the drag started on.
+    passive =
+        match carousel.drag {
+            Dragging(_) => [("pointer-events", "none")]
+            Resting | Pressed(_) => []
+        }
+    layout =
+        match carousel.transition {
+            Slide => [Attribute.class("carousel-slide"), Attribute.style([width].concat(passive))]
+            Fade => {
+                class = if shown "carousel-slide carousel-slide--fade carousel-slide--active" else "carousel-slide carousel-slide--fade"
+                # Each slide sits one slot to the right of the one before, and
+                # the slot at the start of the view is at 0. Only opacity
+                # animates, so the slides snap to their slots while they
+                # cross-fade.
+                offset = (index.to_f64() - start) * 100.0
+                [Attribute.class(class), Attribute.style([width, ("transform", "translateX(${offset.to_str()}%)")].concat(passive))]
+            }
+        }
+    name = carousel.slide_label.replace_each("{number}", (index + 1).to_str()).replace_each("{count}", count.to_str())
+    Html.div(
+        layout.concat(
+            [
+                Attribute.role("group"),
+                Attribute.aria("roledescription", "slide"),
+                Attribute.aria("label", name),
+                Attribute.boolean("inert", !shown),
+            ],
+        ),
+        [content],
+    )
+}
+
+## Whether a slide shows, a partly shown one included, in a view that starts
+## `start` slides in and is `slides_per_view` slides wide.
+in_window : U64, F64, F64 -> Bool
+in_window = |index, start, slides_per_view| {
+    slot = index.to_f64()
+    slot + 1.0 > start and slot < start + slides_per_view
+}
+
+track_transform : Carousel(slide) -> Str
+track_transform = |carousel| {
+    slide_width = 100.0 / carousel.slides_per_view.to_f64()
+    shift = 0.0 - view_start(carousel) * slide_width
+    match carousel.drag {
+        Dragging(drag) => "translate3d(calc(${shift.to_str()}% + ${drag.offset_px.to_str()}px), 0, 0)"
+        Resting | Pressed(_) => "translate3d(${shift.to_str()}%, 0, 0)"
+    }
+}
+
+## The track follows the pointer without delay while a drag runs, takes its
+## new slot at once after a wrap that jumps, and animates to its slot
+## otherwise.
+track_transition : Carousel(slide) -> Str
+track_transition = |carousel|
+    match carousel.drag {
+        Dragging(_) => "none"
+        Resting | Pressed(_) => if carousel.instant "none" else "transform ${carousel.duration_ms.to_str()}ms ease-out"
+    }
+
 # ============================================================================
-# Unit Tests
+# Tests
 # ============================================================================
 
-# Note: the JSON-serialization regression guard for State/Config lives in
-# `test_serialization.roc` (a standalone test app), so the package itself does
-# not depend on a JSON codec. See that file for why State/Config must stay flat.
+letters : List(Str)
+letters = ["A", "B", "C"]
 
-# --- init tests ---
+abc : Carousel(Str)
+abc = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters") })
+
+render : Carousel(Str) -> Str
+render = |carousel| Html.render(carousel.view(|letter, index| Html.text("${letter}${index.to_str()}"), |event| event))
+
+press : F64 -> Carousel.Event
+press = |x| { action: PointerDown({ x, button: 0 }) }
+
+move_to : F64 -> Carousel.Event
+move_to = |x| { action: PointerMove(x) }
+
+release : Carousel.Event
+release = { action: PointerUp }
+
+drag_by : Carousel(Str), F64 -> Carousel(Str)
+drag_by = |carousel, dx| carousel.update(press(200.0)).update(move_to(200.0 + dx))
+
+is_resting : Carousel(Str) -> Bool
+is_resting = |carousel|
+    match carousel.drag {
+        Resting => Bool.True
+        Pressed(_) | Dragging(_) => Bool.False
+    }
+
+two_per_view : SlidesPerView
+two_per_view = SlidesPerView.from_f64(2.0) ?? SlidesPerView.one
+
+# Four slides, two at a time: the view goes as far as the third slide.
+panes : Carousel(Str)
+panes = Carousel.new({ id: "panes", slides: ["A", "B", "C", "D"], label: Labelled("Panes"), slides_per_view: two_per_view })
+
+# --- new ---
+
+expect abc.active_index() == 0 and abc.slides() == letters and abc.slide_count() == 3 and is_resting(abc)
 
 expect {
-    # init creates state with correct initial values
-    config = { ..Carousel.default_config, initial_slide: 2 }
-    match Carousel.init({ id: "test", config: config, slide_count: 5 }) {
-        Ok(state) => state.active_index == 2 and state.slide_count == 5 and state.is_dragging == Bool.False and state.id == "test"
-        Err(_) => Bool.False
+    empty = Carousel.new({ id: "empty", slides: [], label: Labelled("Empty") })
+    empty.active_index() == 0 and empty.slide_count() == 0 and !empty.has_previous() and !empty.has_next()
+}
+
+# --- stepping ---
+
+expect abc.update(Carousel.next).active_index() == 1
+
+expect abc.update(Carousel.next).update(Carousel.previous).active_index() == 0
+
+expect {
+    # Stop: the last slide stays the last.
+    last = abc.update(Carousel.go_to(2))
+    last.update(Carousel.next).active_index() == 2 and !last.has_next() and last.has_previous()
+}
+
+expect {
+    # Stop: the first slide stays the first.
+    abc.update(Carousel.previous).active_index() == 0 and !abc.has_previous() and abc.has_next()
+}
+
+expect {
+    wrapping = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), at_ends: Wrap })
+    wrapping.update(Carousel.previous).active_index() == 2
+    and wrapping.update(Carousel.go_to(2)).update(Carousel.next).active_index() == 0
+    and wrapping.has_previous()
+    and wrapping.update(Carousel.go_to(2)).has_next()
+}
+
+expect {
+    # A single slide has nothing to wrap to.
+    single = Carousel.new({ id: "single", slides: ["A"], label: Labelled("Single"), at_ends: Wrap })
+    single.update(Carousel.next).active_index() == 0 and !single.has_next() and !single.has_previous()
+}
+
+expect {
+    # Nothing moves in an empty carousel, whatever the event.
+    empty = Carousel.new({ id: "empty", slides: [], label: Labelled("Empty"), at_ends: Wrap })
+    empty.update(Carousel.next).active_index() == 0 and empty.update(Carousel.previous).active_index() == 0 and empty.update(Carousel.go_to(0)).active_index() == 0
+}
+
+expect abc.update(Carousel.go_to(2)).active_index() == 2
+
+expect abc.update(Carousel.go_to(1)).update(Carousel.go_to(3)).active_index() == 1
+
+# --- several slides per view ---
+
+expect {
+    # The view stops once the last slide is fully in it.
+    at_end = panes.update(Carousel.next).update(Carousel.next)
+    at_end.active_index() == 2 and !at_end.has_next() and at_end.update(Carousel.next).active_index() == 2
+}
+
+expect {
+    # Going to a slide past that point goes as far as the view goes, which
+    # brings the slide into view.
+    panes.update(Carousel.go_to(3)).active_index() == 2 and panes.update(Carousel.go_to(4)).active_index() == 0
+}
+
+expect {
+    # A wrap back from the start goes to the end of the view.
+    wrapping = Carousel.new({ id: "panes", slides: ["A", "B", "C", "D"], label: Labelled("Panes"), slides_per_view: two_per_view, at_ends: Wrap })
+    wrapping.update(Carousel.previous).active_index() == 2 and wrapping.update(Carousel.go_to(2)).update(Carousel.next).active_index() == 0
+}
+
+expect {
+    # Slides that all fit in view leave nowhere to go, wrapping or not.
+    pair = Carousel.new({ id: "pair", slides: ["A", "B"], label: Labelled("Pair"), slides_per_view: two_per_view, at_ends: Wrap })
+    !pair.has_next() and !pair.has_previous() and pair.update(Carousel.next).active_index() == 0
+}
+
+expect {
+    # Shrinking the slides pulls the view back to where it ends.
+    panes.update(Carousel.go_to(2)).set_slides(["A", "B", "C"]).active_index() == 1
+}
+
+expect {
+    # The last view of four slides two at a time shows the third and fourth.
+    html = render(panes.update(Carousel.go_to(2)))
+    html.contains("translate3d(-100%, 0, 0)")
+    and html.contains("aria-label=\"2 / 4\" inert>B1")
+    and html.contains("aria-label=\"3 / 4\">C2")
+    and html.contains("aria-label=\"4 / 4\">D3")
+}
+
+expect {
+    # One and a half per view: the last step brings the last slide fully in,
+    # with half of the one before it.
+    one_and_a_half = SlidesPerView.from_f64(1.5) ?? SlidesPerView.one
+    carousel = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), slides_per_view: one_and_a_half })
+    at_end = carousel.update(Carousel.next).update(Carousel.next)
+    html = render(at_end)
+    at_end.active_index() == 2
+    and !at_end.has_next()
+    and html.contains("aria-label=\"1 / 3\" inert>A0")
+    and html.contains("aria-label=\"2 / 3\">B1")
+    and html.contains("aria-label=\"3 / 3\">C2")
+}
+
+expect {
+    # Fade lays the last view out the same way.
+    fading = Carousel.new({ id: "panes", slides: ["A", "B", "C", "D"], label: Labelled("Panes"), slides_per_view: two_per_view, transition: Fade })
+    html = render(fading.update(Carousel.go_to(3)))
+    html.contains("style=\"width: 50%; transform: translateX(0%)\" role=\"group\" aria-roledescription=\"slide\" aria-label=\"3 / 4\">C2")
+    and html.contains("style=\"width: 50%; transform: translateX(100%)\" role=\"group\" aria-roledescription=\"slide\" aria-label=\"4 / 4\">D3")
+}
+
+# --- dragging ---
+
+expect {
+    dragging = drag_by(abc, -30.0)
+    match dragging.drag {
+        Dragging(drag) => drag.offset_px < -29.9 and drag.offset_px > -30.1
+        Resting | Pressed(_) => Bool.False
     }
 }
 
 expect {
-    # init with default config starts at slide 0
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => state.active_index == 0
-        Err(_) => Bool.False
-    }
+    # A move without a press is hover, not a drag.
+    is_resting(abc.update(move_to(10.0)))
 }
 
-# --- init validation error tests ---
-
-expect {
-    # init with 0 slides returns NoSlides error
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 0 }) {
-        Err(NoSlides) => Bool.True
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with slides_per_view = 0 returns InvalidSlidesPerView error
-    config = { ..Carousel.default_config, slides_per_view: 0.0 }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Err(InvalidSlidesPerView) => Bool.True
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with negative slides_per_view returns InvalidSlidesPerView error
-    config = { ..Carousel.default_config, slides_per_view: -1.0 }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Err(InvalidSlidesPerView) => Bool.True
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with initial_slide >= slide_count returns InitialSlideOutOfBounds error
-    config = { ..Carousel.default_config, initial_slide: 5 }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Err(InitialSlideOutOfBounds(bounds)) => bounds.initial_slide == 5 and bounds.slide_count == 3
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with initial_slide == slide_count returns InitialSlideOutOfBounds error
-    config = { ..Carousel.default_config, initial_slide: 3 }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Err(InitialSlideOutOfBounds(_)) => Bool.True
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with valid config at boundary (initial_slide = slide_count - 1) succeeds
-    config = { ..Carousel.default_config, initial_slide: 2 }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Ok(state) => state.active_index == 2
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # init with id containing pipe returns InvalidCarouselId error
-    match Carousel.init({ id: "bad|id", config: Carousel.default_config, slide_count: 3 }) {
-        Err(InvalidCarouselId(bad_id)) => bad_id == "bad|id"
-        _ => Bool.False
-    }
-}
-
-expect {
-    # init with valid id succeeds
-    match Carousel.init({ id: "my-carousel", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => state.id == "my-carousel"
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: drag forward tests ---
-
-expect {
-    # MouseDown starts dragging
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, MouseDown(100.0, 50.0))
-            new_state.is_dragging == Bool.True
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # MouseMove during drag updates offset (offset should be negative when moving left)
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state_dragging = Carousel.update(state, MouseDown(100.0, 50.0))
-            state_moved = Carousel.update(state_dragging, MouseMove(50.0, 50.0))
-            state_moved.drag_offset_px < 0.0 # moved left, so offset is negative
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # MouseMove without dragging does not update offset
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, MouseMove(50.0, 50.0))
-            new_state.is_dragging == Bool.False
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # Drag left more than threshold advances slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(200.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(100.0, 50.0)) # -100px offset, exceeds -50 threshold
-            state3 = Carousel.update(state2, MouseUp(100.0, 50.0))
-            state3.active_index == 1 and state3.is_dragging == Bool.False
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: drag backward tests ---
-
-expect {
-    # Drag right more than threshold goes to previous slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(initial) => {
-            state = { ..initial, active_index: 1 }
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(200.0, 50.0)) # +100px offset, exceeds +50 threshold
-            state3 = Carousel.update(state2, MouseUp(200.0, 50.0))
-            state3.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: insufficient drag tests ---
-
-expect {
-    # Drag less than threshold does NOT change slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(70.0, 50.0)) # -30px offset, below 50px threshold
-            state3 = Carousel.update(state2, MouseUp(70.0, 50.0))
-            state3.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # Drag exactly at threshold boundary (49px) does NOT change slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(51.0, 50.0)) # -49px offset
-            state3 = Carousel.update(state2, MouseUp(51.0, 50.0))
-            state3.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # Drag just over threshold (51px) DOES change slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(49.0, 50.0)) # -51px offset
-            state3 = Carousel.update(state2, MouseUp(49.0, 50.0))
-            state3.active_index == 1
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: boundary tests ---
-
-expect {
-    # Cannot go before first slide (drag right at slide 0)
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(200.0, 50.0)) # +100px, would go to -1
-            state3 = Carousel.update(state2, MouseUp(200.0, 50.0))
-            state3.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # Cannot go past last slide (drag left at last slide)
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(initial) => {
-            state = { ..initial, active_index: 2 } # at last slide (index 2 of 3)
-            state1 = Carousel.update(state, MouseDown(200.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(100.0, 50.0)) # -100px, would go to 3
-            state3 = Carousel.update(state2, MouseUp(100.0, 50.0))
-            state3.active_index == 2
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: PrevSlide/NextSlide tests ---
-
-expect {
-    # NextSlide advances to next slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, NextSlide)
-            new_state.active_index == 1
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # PrevSlide goes to previous slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(initial) => {
-            state = { ..initial, active_index: 2 }
-            new_state = Carousel.update(state, PrevSlide)
-            new_state.active_index == 1
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # NextSlide at last slide stays at last
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(initial) => {
-            state = { ..initial, active_index: 2 }
-            new_state = Carousel.update(state, NextSlide)
-            new_state.active_index == 2
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # PrevSlide at first slide stays at first
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, PrevSlide)
-            new_state.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: GoToSlide tests ---
-
-expect {
-    # GoToSlide goes to specified slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 5 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, GoToSlide(3))
-            new_state.active_index == 3
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # GoToSlide with invalid index (too high) stays at current
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, GoToSlide(10))
-            new_state.active_index == 0
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: MouseLeave during drag tests ---
-
-expect {
-    # MouseLeave during drag finalizes with slide change if threshold exceeded
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(200.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(100.0, 50.0)) # -100px
-            state3 = Carousel.update(state2, MouseLeave)
-            state3.active_index == 1 and state3.is_dragging == Bool.False
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # MouseLeave during drag does NOT change slide if threshold not exceeded
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, MouseDown(100.0, 50.0))
-            state2 = Carousel.update(state1, MouseMove(70.0, 50.0)) # -30px
-            state3 = Carousel.update(state2, MouseLeave)
-            state3.active_index == 0 and state3.is_dragging == Bool.False
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- update: TouchStart/TouchMove/TouchEnd tests ---
-
-expect {
-    # TouchStart starts dragging (same as MouseDown)
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            new_state = Carousel.update(state, TouchStart(100.0, 50.0))
-            new_state.is_dragging == Bool.True
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # Touch drag left advances slide
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            state1 = Carousel.update(state, TouchStart(200.0, 50.0))
-            state2 = Carousel.update(state1, TouchMove(100.0, 50.0))
-            state3 = Carousel.update(state2, TouchEnd(100.0, 50.0))
-            state3.active_index == 1
-        }
-        Err(_) => Bool.False
-    }
-}
-
-# --- encode_event/decode_event roundtrip tests ---
-
-expect {
-    # encode/decode PrevSlide roundtrip
-    match Carousel.init({ id: "test-carousel", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            encoded = Carousel.encode_event(state, PrevSlide)
-            match Carousel.decode_event(encoded, []) {
-                Ok(decoded) =>
-                    match decoded.event {
-                        PrevSlide => decoded.id == "test-carousel"
-                        _ => Bool.False
-                    }
-                _ => Bool.False
-            }
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # encode/decode NextSlide roundtrip
-    match Carousel.init({ id: "test-carousel", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            encoded = Carousel.encode_event(state, NextSlide)
-            match Carousel.decode_event(encoded, []) {
-                Ok(decoded) =>
-                    match decoded.event {
-                        NextSlide => decoded.id == "test-carousel"
-                        _ => Bool.False
-                    }
-                _ => Bool.False
-            }
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # encode/decode GoToSlide roundtrip
-    match Carousel.init({ id: "test-carousel", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => {
-            encoded = Carousel.encode_event(state, GoToSlide(2))
-            match Carousel.decode_event(encoded, []) {
-                Ok(decoded) =>
-                    match decoded.event {
-                        GoToSlide(slide_idx) => decoded.id == "test-carousel" and slide_idx == 2
-                        _ => Bool.False
-                    }
-                _ => Bool.False
-            }
-        }
-        Err(_) => Bool.False
-    }
-}
-
-expect {
-    # decode MouseDown with coordinates (check tag, not exact floats)
-    match Carousel.decode_event("Carousel|my-carousel|MouseDown", Str.to_utf8("123.5,456.7")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => decoded.id == "my-carousel"
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
-}
-
-expect {
-    # decode TouchStart with coordinates (check tag, not exact floats)
-    match Carousel.decode_event("Carousel|touch-carousel|TouchStart", Str.to_utf8("100.0,200.0")) {
-        Ok(decoded) =>
-            match decoded.event {
-                TouchStart(_, _) => decoded.id == "touch-carousel"
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
-}
-
-expect {
-    # decode MouseLeave with pipe format
-    match Carousel.decode_event("Carousel|test|MouseLeave", []) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseLeave => decoded.id == "test"
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
-}
-
-# --- decode_event error handling tests ---
-
-expect {
-    # decode unknown event returns Err (doesn't start with "Carousel|")
-    match Carousel.decode_event("UnknownEvent", []) {
-        Err(UnknownEvent(msg)) => msg == "UnknownEvent"
-        _ => Bool.False
-    }
-}
-
-expect {
-    # decode empty string returns Err
-    match Carousel.decode_event("", []) {
-        Err(UnknownEvent(msg)) => msg == ""
-        _ => Bool.False
-    }
-}
-
-expect {
-    # decode random string returns Err with the string
-    match Carousel.decode_event("SomethingRandom123", []) {
-        Err(UnknownEvent(msg)) => msg == "SomethingRandom123"
-        _ => Bool.False
-    }
-}
-
-expect {
-    # decode unknown event type within Carousel format returns Err
-    match Carousel.decode_event("Carousel|test|UnknownAction", []) {
-        Err(UnknownEvent(msg)) => msg == "Carousel|test|UnknownAction"
-        _ => Bool.False
-    }
-}
-
-# --- parse_coords edge case tests ---
-
-expect {
-    # empty payload defaults to (0, 0)
-    match Carousel.decode_event("Carousel|test|MouseDown", []) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
-}
-
-expect {
-    # just a comma defaults to (0, 0)
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8(",")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
-}
-
 expect {
-    # invalid numbers default to 0
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("abc,def")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    # Only the primary button drags.
+    is_resting(abc.update({ action: PointerDown({ x: 200.0, button: 2 }) }).update(move_to(100.0)))
 }
 
 expect {
-    # partial valid - first number valid, second invalid
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("100,abc")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    # A press is not a drag until it moves, so the track keeps animating.
+    pressed = abc.update(Carousel.next).update(press(200.0)).update(move_to(204.0))
+    render(pressed).contains("translate3d(-100%, 0, 0); transition: transform 300ms ease-out")
 }
 
 expect {
-    # no comma - defaults to (0, 0)
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("123")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    # A press that does not move is a click, which changes nothing.
+    clicked = abc.update(press(200.0)).update(release)
+    clicked.active_index() == 0 and is_resting(clicked)
 }
 
 expect {
-    # extra commas - parses first two parts
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("1,2,3")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    # Once a press moves, the slides stop taking pointer events until the
+    # drag ends, and only then.
+    !render(abc.update(press(200.0))).contains("pointer-events")
+    and render(drag_by(abc, -6.0)).contains("style=\"width: 100%; pointer-events: none\"")
+    and !render(drag_by(abc, -80.0).update(release)).contains("pointer-events")
 }
 
 expect {
-    # negative numbers work
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("-100.5,-200.5")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    # A threshold below the distance a drag starts at still decides.
+    touchy = Carousel.new({ id: "touchy", slides: letters, label: Labelled("Letters"), drag_threshold_px: 2 })
+    drag_by(touchy, -3.0).update(release).active_index() == 1
 }
 
 expect {
-    # scientific notation - may or may not parse depending on F64.from_str
-    match Carousel.decode_event("Carousel|test|MouseDown", Str.to_utf8("1e10,2e10")) {
-        Ok(decoded) =>
-            match decoded.event {
-                MouseDown(_, _) => Bool.True
-                _ => Bool.False
-            }
-        _ => Bool.False
-    }
+    released = drag_by(abc, -51.0).update(release)
+    released.active_index() == 1 and is_resting(released)
 }
-
-# --- view helper function tests ---
 
-# calculate_slide_width tests
-
 expect {
-    # 1 slide per view = 100% width
-    width = Carousel.calculate_slide_width(1.0)
-    width > 99.9 and width < 100.1
+    # Exactly the threshold is not past it.
+    released = drag_by(abc, -50.0).update(release)
+    released.active_index() == 0 and is_resting(released)
 }
 
-expect {
-    # 2 slides per view = 50% width
-    width = Carousel.calculate_slide_width(2.0)
-    width > 49.9 and width < 50.1
-}
+expect drag_by(abc.update(Carousel.go_to(1)), 51.0).update(release).active_index() == 0
 
-expect {
-    # 3 slides per view = ~33.33% width
-    width = Carousel.calculate_slide_width(3.0)
-    width > 33.0 and width < 34.0
-}
+expect drag_by(abc.update(Carousel.go_to(1)), 50.0).update(release).active_index() == 1
 
 expect {
-    # fractional slides per view (1.5) = ~66.67% width
-    width = Carousel.calculate_slide_width(1.5)
-    width > 66.0 and width < 67.0
+    far = Carousel.new({ id: "far", slides: letters, label: Labelled("Letters"), drag_threshold_px: 100 })
+    drag_by(far, -99.0).update(release).active_index() == 0 and drag_by(far, -101.0).update(release).active_index() == 1
 }
 
-# calculate_transform tests
-
 expect {
-    # at slide 0, not dragging = translate3d(-0%, 0, 0)
-    # Note: -0 is produced by negating 0.0 in Roc
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 0,
-            slides_per_view: 1.0,
-            is_dragging: Bool.False,
-            drag_offset_px: 0.0,
-        },
-    )
-    transform == "translate3d(-0%, 0, 0)"
+    # Leaving the carousel ends the drag like a release.
+    left = drag_by(abc, -80.0).update({ action: PointerLeave })
+    left.active_index() == 1 and is_resting(left)
 }
 
 expect {
-    # at slide 1 with 1 slide per view = translate3d(-100%, 0, 0)
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 1,
-            slides_per_view: 1.0,
-            is_dragging: Bool.False,
-            drag_offset_px: 0.0,
-        },
-    )
-    transform == "translate3d(-100%, 0, 0)"
+    # A cancelled gesture ends the drag without changing the slide.
+    cancelled = drag_by(abc, -80.0).update({ action: PointerCancel })
+    cancelled.active_index() == 0 and is_resting(cancelled)
 }
 
 expect {
-    # at slide 2 with 1 slide per view = translate3d(-200%, 0, 0)
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 2,
-            slides_per_view: 1.0,
-            is_dragging: Bool.False,
-            drag_offset_px: 0.0,
-        },
-    )
-    transform == "translate3d(-200%, 0, 0)"
+    # The browser's own drag of an image changes nothing.
+    dragging = drag_by(abc, -80.0)
+    dragging.update({ action: NativeDragStart }).update(release).active_index() == 1
 }
 
-expect {
-    # at slide 1 with 2 slides per view = translate3d(-50%, 0, 0)
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 1,
-            slides_per_view: 2.0,
-            is_dragging: Bool.False,
-            drag_offset_px: 0.0,
-        },
-    )
-    transform == "translate3d(-50%, 0, 0)"
-}
+expect drag_by(abc, 80.0).update(release).active_index() == 0
 
-expect {
-    # while dragging, uses calc() with pixel offset
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 0,
-            slides_per_view: 1.0,
-            is_dragging: Bool.True,
-            drag_offset_px: -50.0,
-        },
-    )
-    transform == "translate3d(calc(-0% + -50px), 0, 0)"
-}
+expect drag_by(abc.update(Carousel.go_to(2)), -80.0).update(release).active_index() == 2
 
 expect {
-    # dragging with positive offset
-    transform = Carousel.calculate_transform(
-        {
-            active_index: 1,
-            slides_per_view: 1.0,
-            is_dragging: Bool.True,
-            drag_offset_px: 75.0,
-        },
-    )
-    transform == "translate3d(calc(-100% + 75px), 0, 0)"
+    wrapping = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), at_ends: Wrap })
+    drag_by(wrapping, 80.0).update(release).active_index() == 2
 }
 
-# calculate_transition tests
-
-expect {
-    # not dragging = animated transition with default duration
-    transition = Carousel.calculate_transition(Bool.False, 300)
-    transition == "transform 300ms ease-out"
-}
+# --- set_slides ---
 
-expect {
-    # not dragging = animated transition with custom duration
-    transition = Carousel.calculate_transition(Bool.False, 500)
-    transition == "transform 500ms ease-out"
-}
+expect abc.update(Carousel.go_to(1)).set_slides(["A", "B", "C", "D"]).active_index() == 1
 
 expect {
-    # dragging = no transition (duration ignored)
-    transition = Carousel.calculate_transition(Bool.True, 300)
-    transition == "none"
+    shrunk = abc.update(Carousel.go_to(2)).set_slides(["A", "B"])
+    shrunk.active_index() == 1 and shrunk.slides() == ["A", "B"]
 }
-
-# nav_button_class tests
 
-expect {
-    # prev button not disabled
-    cls = Carousel.nav_button_class("carousel-button-prev", Bool.False)
-    cls == "carousel-button-prev"
-}
+expect abc.update(Carousel.go_to(2)).set_slides([]).active_index() == 0
 
-expect {
-    # prev button disabled
-    cls = Carousel.nav_button_class("carousel-button-prev", Bool.True)
-    cls == "carousel-button-prev carousel-button-disabled"
-}
+expect Carousel.new({ id: "later", slides: [], label: Labelled("Later") }).set_slides(letters).update(Carousel.next).active_index() == 1
 
-expect {
-    # next button not disabled
-    cls = Carousel.nav_button_class("carousel-button-next", Bool.False)
-    cls == "carousel-button-next"
-}
+# --- view ---
 
 expect {
-    # next button disabled
-    cls = Carousel.nav_button_class("carousel-button-next", Bool.True)
-    cls == "carousel-button-next carousel-button-disabled"
+    html = render(abc)
+    html.starts_with("<div id=\"abc\" class=\"carousel\" role=\"region\" aria-roledescription=\"carousel\" aria-label=\"Letters\">")
 }
 
 expect {
-    # works with any base class
-    cls = Carousel.nav_button_class("custom-class", Bool.True)
-    cls == "custom-class carousel-button-disabled"
+    grouped = Carousel.new({ id: "abc", slides: letters, label: LabelledBy("letters-heading"), role: Group })
+    render(grouped).contains("role=\"group\" aria-roledescription=\"carousel\" aria-labelledby=\"letters-heading\">")
 }
-
-# fade_slide_in_window tests
 
 expect {
-    # the active slide is always in the window
-    Carousel.fade_slide_in_window(2, 2, 1.0) == Bool.True
+    # The slides sit in a polite live region that the buttons control.
+    render(abc).contains("<div id=\"abc-slides\" aria-live=\"polite\" aria-atomic=\"false\" class=\"carousel-wrapper\"")
 }
 
 expect {
-    # slides before the active one are never in the window
-    Carousel.fade_slide_in_window(1, 2, 1.0) == Bool.False
+    # Every slide is a labelled group, and render_slide gets its index.
+    html = render(abc)
+    html.contains("aria-roledescription=\"slide\" aria-label=\"1 / 3\">A0</div>")
+    and html.contains("aria-label=\"3 / 3\" inert>C2</div>")
 }
 
 expect {
-    # with slides_per_view 1.0 the next slide is out of the window
-    Carousel.fade_slide_in_window(3, 2, 1.0) == Bool.False
+    # The slide labels are in the page's language.
+    swedish = Carousel.new({ id: "abc", slides: letters, label: Labelled("Bokstäver"), slide_label: "Bild {number} av {count}" })
+    render(swedish).contains("aria-label=\"Bild 2 av 3\" inert>B1</div>")
 }
 
 expect {
-    # slides_per_view 2.0 widens the window to the active slide plus the next
-    Carousel.fade_slide_in_window(3, 2, 2.0) == Bool.True and Carousel.fade_slide_in_window(4, 2, 2.0) == Bool.False
+    # Only the slides in view are reachable.
+    html = render(abc.update(Carousel.next))
+    html.contains("aria-label=\"1 / 3\" inert>A0")
+    and html.contains("aria-label=\"2 / 3\">B1")
+    and html.contains("aria-label=\"3 / 3\" inert>C2")
 }
 
 expect {
-    # a fractional slides_per_view still includes the partial preview slide
-    Carousel.fade_slide_in_window(3, 2, 1.5) == Bool.True and Carousel.fade_slide_in_window(4, 2, 1.5) == Bool.False
+    # Two per view: the active slide and the next one show.
+    html = render(Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), slides_per_view: two_per_view }))
+    html.contains("width: 50%")
+    and html.contains("aria-label=\"1 / 3\">A0")
+    and html.contains("aria-label=\"2 / 3\">B1")
+    and html.contains("aria-label=\"3 / 3\" inert>C2")
 }
 
-# fade_slide_offset_percent tests
-
-expect {
-    # the active slide sits at the origin
-    offset = Carousel.fade_slide_offset_percent(2, 2)
-    offset > -0.1 and offset < 0.1
-}
+expect render(abc).contains("style=\"transform: translate3d(0%, 0, 0); transition: transform 300ms ease-out\"")
 
-expect {
-    # each later slide steps one full slot to the right
-    offset = Carousel.fade_slide_offset_percent(3, 2)
-    offset > 99.9 and offset < 100.1
-}
+expect render(abc.update(Carousel.go_to(2))).contains("transform: translate3d(-200%, 0, 0)")
 
 expect {
-    # earlier slides sit off-screen to the left
-    offset = Carousel.fade_slide_offset_percent(1, 2)
-    offset > -100.1 and offset < -99.9
+    # While dragging the track follows the pointer and does not animate.
+    html = render(drag_by(abc.update(Carousel.next), -40.0))
+    html.contains("transform: translate3d(calc(-100% + -40px), 0, 0); transition: none")
 }
 
-# fade_slide_class tests
+expect render(Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), duration_ms: 500 })).contains("transition: transform 500ms ease-out")
 
 expect {
-    # active slide gets the active class
-    cls = Carousel.fade_slide_class(2, 2, 1.0)
-    cls == "carousel-slide carousel-slide--fade carousel-slide--active"
+    fading = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), transition: Fade, duration_ms: 400 })
+    html = render(fading.update(Carousel.next))
+    html.contains("class=\"carousel-wrapper carousel-wrapper--fade\" style=\"--carousel-fade-duration: 400ms\"")
+    and html.contains("class=\"carousel-slide carousel-slide--fade\" style=\"width: 100%; transform: translateX(-100%)\"")
+    and html.contains("class=\"carousel-slide carousel-slide--fade carousel-slide--active\" style=\"width: 100%; transform: translateX(0%)\"")
+    and html.contains("transform: translateX(100%)\" role=\"group\" aria-roledescription=\"slide\" aria-label=\"3 / 3\" inert>")
 }
 
 expect {
-    # inactive slide does not get the active class
-    cls = Carousel.fade_slide_class(1, 2, 1.0)
-    cls == "carousel-slide carousel-slide--fade"
+    # No buttons unless asked for.
+    !render(abc).contains("<button")
 }
 
 expect {
-    # a slide inside a widened window gets the active class
-    cls = Carousel.fade_slide_class(3, 2, 2.0)
-    cls == "carousel-slide carousel-slide--fade carousel-slide--active"
+    # A button that would change nothing stays focusable, marked aria-disabled.
+    buttons = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), navigation: Buttons({ previous: "Föregående", next: "Nästa" }) })
+    first = render(buttons)
+    last = render(buttons.update(Carousel.go_to(2)))
+    first.contains("<button class=\"carousel-button-prev carousel-button-disabled\" type=\"button\" aria-label=\"Föregående\" aria-controls=\"abc-slides\" aria-disabled=\"true\"></button>")
+    and first.contains("<button class=\"carousel-button-next\" type=\"button\" aria-label=\"Nästa\" aria-controls=\"abc-slides\"></button>")
+    and last.contains("<button class=\"carousel-button-prev\" type=\"button\" aria-label=\"Föregående\" aria-controls=\"abc-slides\"></button>")
+    and last.contains("<button class=\"carousel-button-next carousel-button-disabled\" type=\"button\" aria-label=\"Nästa\" aria-controls=\"abc-slides\" aria-disabled=\"true\"></button>")
+    and !first.contains(" disabled")
 }
 
 expect {
-    # default config uses slide mode, not fade
-    Carousel.default_config.is_fade == Bool.False
+    # A wrapping carousel never disables its buttons.
+    wrapping = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), at_ends: Wrap, navigation: Buttons({ previous: "Back", next: "Forward" }) })
+    !render(wrapping).contains("disabled")
 }
 
 expect {
-    # a fade-mode carousel initializes like any other (slides_per_view still applies)
-    config = { ..Carousel.default_config, is_fade: Bool.True }
-    match Carousel.init({ id: "test", config: config, slide_count: 3 }) {
-        Ok(state) => state.active_index == 0 and state.config.is_fade == Bool.True
-        Err(_) => Bool.False
-    }
+    # An empty carousel renders an empty track.
+    html = render(Carousel.new({ id: "empty", slides: [], label: Labelled("Empty") }))
+    html.contains("class=\"carousel-wrapper\" style=\"transform: translate3d(0%, 0, 0); transition: transform 300ms ease-out\"></div>")
 }
 
-# --- InvalidCarouselId validation tests (validated at init) ---
+# --- wraps ---
 
-expect {
-    # init rejects id with pipe at start
-    match Carousel.init({ id: "|leading", config: Carousel.default_config, slide_count: 3 }) {
-        Err(InvalidCarouselId(_)) => Bool.True
-        _ => Bool.False
-    }
-}
+jumping : Carousel(Str)
+jumping = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), at_ends: Wrap, wraps: Jump })
 
 expect {
-    # init rejects id with pipe at end
-    match Carousel.init({ id: "trailing|", config: Carousel.default_config, slide_count: 3 }) {
-        Err(InvalidCarouselId(_)) => Bool.True
-        _ => Bool.False
-    }
+    # By default a wrap slides back across the track like any step.
+    wrapping = Carousel.new({ id: "abc", slides: letters, label: Labelled("Letters"), at_ends: Wrap })
+    render(wrapping.update(Carousel.previous)).contains("translate3d(-200%, 0, 0); transition: transform 300ms ease-out")
 }
 
 expect {
-    # init rejects id with pipe in middle
-    match Carousel.init({ id: "bad|id", config: Carousel.default_config, slide_count: 3 }) {
-        Err(InvalidCarouselId(bad_id)) => bad_id == "bad|id"
-        _ => Bool.False
-    }
+    # Jump: wrapping back from the first slide puts the last one in place at once.
+    wrapped = jumping.update(Carousel.previous)
+    wrapped.active_index() == 2 and render(wrapped).contains("translate3d(-200%, 0, 0); transition: none")
 }
 
 expect {
-    # init rejects empty id
-    match Carousel.init({ id: "", config: Carousel.default_config, slide_count: 3 }) {
-        Err(InvalidCarouselId(bad_id)) => bad_id == ""
-        _ => Bool.False
-    }
+    # The same forward, from the last slide to the first.
+    render(jumping.update(Carousel.go_to(2)).update(Carousel.next)).contains("translate3d(0%, 0, 0); transition: none")
 }
 
 expect {
-    # init accepts valid id without pipe
-    match Carousel.init({ id: "my-carousel", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) => state.id == "my-carousel"
-        Err(_) => Bool.False
-    }
+    # Steps between neighbours still slide, the one right after a jump too.
+    render(jumping.update(Carousel.next)).contains("translate3d(-100%, 0, 0); transition: transform 300ms ease-out")
+    and render(jumping.update(Carousel.previous).update(Carousel.previous)).contains("translate3d(-100%, 0, 0); transition: transform 300ms ease-out")
 }
-
-# --- set_slide_count tests ---
 
 expect {
-    # set_slide_count rejects new_count == 0
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) =>
-            match Carousel.set_slide_count(state, 0) {
-                Err(NoSlides) => Bool.True
-                Ok(_) => Bool.False
-            }
-        Err(_) => Bool.False
-    }
+    # A swipe past the end jumps the same way.
+    render(drag_by(jumping, 80.0).update(release)).contains("translate3d(-200%, 0, 0); transition: none")
 }
 
 expect {
-    # set_slide_count updates slide_count for a valid new_count
-    match Carousel.init({ id: "test", config: Carousel.default_config, slide_count: 3 }) {
-        Ok(state) =>
-            match Carousel.set_slide_count(state, 5) {
-                Ok(new_state) => new_state.slide_count == 5 and new_state.active_index == 0
-                Err(_) => Bool.False
-            }
-        Err(_) => Bool.False
-    }
+    # A drag too short to change the slide slides back, also right after a jump.
+    render(drag_by(jumping.update(Carousel.previous), 10.0).update(release)).contains("translate3d(-200%, 0, 0); transition: transform 300ms ease-out")
 }
 
 expect {
-    # set_slide_count clamps active_index when it would be out of bounds
-    config = { ..Carousel.default_config, initial_slide: 4 }
-    match Carousel.init({ id: "test", config: config, slide_count: 5 }) {
-        Ok(state) =>
-            # active_index is 4, shrink to 3 slides -> clamp to 2
-            match Carousel.set_slide_count(state, 3) {
-                Ok(new_state) => new_state.active_index == 2 and new_state.slide_count == 3
-                Err(_) => Bool.False
-            }
-        Err(_) => Bool.False
-    }
+    # With two slides a wrap is a step to the neighbour, and slides.
+    pair = Carousel.new({ id: "pair", slides: ["A", "B"], label: Labelled("Pair"), at_ends: Wrap, wraps: Jump })
+    render(pair.update(Carousel.previous)).contains("translate3d(-100%, 0, 0); transition: transform 300ms ease-out")
 }
 
 expect {
-    # set_slide_count keeps active_index when still in bounds
-    config = { ..Carousel.default_config, initial_slide: 1 }
-    match Carousel.init({ id: "test", config: config, slide_count: 5 }) {
-        Ok(state) =>
-            match Carousel.set_slide_count(state, 10) {
-                Ok(new_state) => new_state.active_index == 1 and new_state.slide_count == 10
-                Err(_) => Bool.False
-            }
-        Err(_) => Bool.False
-    }
+    # Going to a slide slides, however far away it is.
+    render(jumping.update(Carousel.previous).update(Carousel.go_to(0))).contains("translate3d(0%, 0, 0); transition: transform 300ms ease-out")
 }
