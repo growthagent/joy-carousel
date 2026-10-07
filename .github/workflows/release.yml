@@ -10,7 +10,8 @@ name: Release
 # --opt=speed running roc check, roc test, the bundle sanity check and
 # ./tests.roc, which is the probes and the whole browser suite. Green there
 # bundles the package and its docs with that same compiler and creates a DRAFT
-# release with starter notes. A human presses Publish.
+# release with starter notes, and attaches the release's carousel.css. A human
+# presses Publish.
 #
 # Optional is the advisory board, which may be red without blocking anything.
 # The suite on every operating system, on each nightly worth asking about,
@@ -55,6 +56,22 @@ jobs:
     permissions:
       contents: write
     uses: niclas-ahden/roc-workflows/.github/workflows/draft-release.yml@v3
+
+  # The carousel needs its stylesheet, which the bundle does not carry. Each
+  # release gets the one that goes with it, so an app takes the CSS of the
+  # exact release it depends on.
+  stylesheet:
+    name: Attach carousel.css
+    needs: draft
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" carousel.css --clobber --repo "$GITHUB_REPOSITORY"
 
   # Optional lane.
 
