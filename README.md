@@ -150,4 +150,4 @@ roc test package/main.roc
 
 ## Status
 
-`joy-carousel` is usable but still in development. Expect breaking changes as the API evolves. Releases up to 0.7.0 are for the old Rust-based Roc compiler, and 0.8.0 is the first one for the new Zig-based compiler.
+`joy-carousel` is usable but still in development. Expect breaking changes as the API evolves.
