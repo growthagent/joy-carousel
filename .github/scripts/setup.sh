@@ -9,7 +9,7 @@ set -euo pipefail
 # private driver protocol, which upstream may change in any release, so a
 # runner and a developer machine disagreeing about the version means they are
 # testing two different protocols.
-PLAYWRIGHT_VERSION=1.61.1
+PLAYWRIGHT_VERSION=1.63.0
 
 npm install -g "playwright@$PLAYWRIGHT_VERSION"
 
