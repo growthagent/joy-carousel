@@ -35,8 +35,9 @@ import spec.Spec
 import spec.Wait
 
 client_main = "tests/app/client/main.roc"
-client_wasm = "tests/app/www/app.wasm"
-client_runtime = "tests/app/www/runtime.js"
+client_www = "tests/app/www"
+client_wasm = "${client_www}/app.wasm"
+client_runtime = "${client_www}/runtime.js"
 server_main = "tests/app/server/main.roc"
 
 main! : List(OsStr) => Try({}, _)
@@ -189,6 +190,10 @@ run_probe! = |src, opt| {
 build_test_app! : Str => Try({}, _)
 build_test_app! = |opt| {
     Stdout.line!("Building the test app...")?
+
+    # Everything in it is a build artifact, which git ignores, so a fresh
+    # checkout has no such directory and the linker cannot write into it.
+    Path.utf8(client_www).create_all!() ? |e| CouldNotCreateDir(client_www, e)
 
     # The memory and stack flags are the ones Joy's own build.roc passes, see
     # the notes there.
