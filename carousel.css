@@ -20,10 +20,10 @@
     position: relative;
 }
 
-/* Fade mode (config.is_fade): every slide shares one grid cell and is offset
+/* Fade mode (transition: Fade): every slide shares one grid cell and is offset
    side by side with translateX (set inline per slide), so a window of
    slides_per_view slides can be visible at once. The active window fades in on
-   top; the rest are transparent and clipped by .carousel's overflow: hidden.
+   top, and the rest are transparent and clipped by .carousel's overflow: hidden.
    The container sizes itself to the largest slide. */
 .carousel-wrapper--fade {
     display: grid;
@@ -48,6 +48,15 @@
     opacity: 1;
     z-index: 1;
     pointer-events: auto;
+}
+
+/* The track's transition is set inline, so only !important overrides it.
+   The slide change still happens, at once. A cross-fade has no motion and
+   stays. */
+@media (prefers-reduced-motion: reduce) {
+    .carousel-wrapper {
+        transition: none !important;
+    }
 }
 
 /* Navigation buttons */
@@ -88,8 +97,10 @@
     content: '\203a';
 }
 
+/* Marked aria-disabled rather than disabled, so it keeps the keyboard focus.
+   It still takes the pointer, so a press on it never falls through to the
+   slide underneath. */
 .carousel-button-disabled {
     opacity: 0.35;
-    cursor: auto;
-    pointer-events: none;
+    cursor: default;
 }

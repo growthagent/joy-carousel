@@ -1,149 +1,156 @@
-app [Model, init!, update!, render] {
-    pf: platform "../../../joy/platform/main.roc",
-    html: "https://github.com/niclas-ahden/joy-html/releases/download/0.14.0/IVK93mBqjterEFSYijs67Dkl1rYfu0qGl4PAhSPGET0.tar.br",
+app [Model, Msg, init, update, render, subscriptions] {
+    pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc1/5gS3GJgH3zis8uU9z7J9UnsDbJdh4EccNxmP71omoNiN.tar.zst",
+    html: "https://github.com/niclas-ahden/joy-html/releases/download/0.17.0/AcmwFzyfbsf5RALWNdX6cXw1cuuDXt96YfcysNqgFqoG.tar.zst",
     carousel: "../../../package/main.roc",
 }
 
-import html.Html exposing [Html, div, text, h1, p]
-import html.Attribute exposing [style]
-import pf.Action exposing [Action]
+import html.Html exposing [div, text, h1, h2, p, a, button, img]
+import html.Attribute exposing [style, id, href, on_click, src, alt]
+import pf.Effect
 import carousel.Carousel
+import carousel.SlidesPerView
 
 Model : {
-    games_carousel : Carousel.State,
-    drinks_carousel : Result Carousel.State Carousel.InitError,
-    # Fade-mode carousels exercised by the browser tests. `fade_single` is a
-    # plain 1-per-view fade; `fade_multi` fades a window of two slides at a time
-    # (slides_per_view: 2.0). `slide_multi` is a non-fade multi-per-view, so the
-    # browser suite also covers slides_per_view > 1 in slide mode.
-    fade_single_carousel : Carousel.State,
-    fade_multi_carousel : Carousel.State,
-    slide_multi_carousel : Carousel.State,
+    # A group rather than a region, for the page has many carousels.
+    games : Carousel(Str),
+    # Named by the visible heading above it.
+    drinks : Carousel(Str),
+    # Fade and multi-per-view carousels exercised by the browser tests.
+    # `fade_single` is a plain 1-per-view fade, `fade_multi` fades a window of
+    # two slides at a time, `slide_multi` slides two per view.
+    fade_single : Carousel(Str),
+    fade_multi : Carousel(Str),
+    slide_multi : Carousel(Str),
+    # Slides that are buttons sending the app's own message, and the last one
+    # picked.
+    picks : Carousel(Str),
+    picked : Str,
+    # Slides that are links, which a drag must never follow.
+    links : Carousel(Str),
+    # Image slides, which the browser would otherwise drag natively. Their
+    # slide labels are in Swedish.
+    photos : Carousel(Str),
+    # Wraps round at the ends.
+    looped : Carousel(Str),
+    # Wraps round at the ends without sliding across the track.
+    jumped : Carousel(Str),
 }
 
-drinks : List Str
-drinks = ["Whisky", "Cognac", "Rum"]
+# Each carousel's events arrive in its own tag, the wrapper the app hands to
+# its view. `Picked` comes from the buttons inside the picks slides.
+Msg : [
+    Games(Carousel.Event),
+    Drinks(Carousel.Event),
+    FadeSingle(Carousel.Event),
+    FadeMulti(Carousel.Event),
+    SlideMulti(Carousel.Event),
+    Picks(Carousel.Event),
+    Picked(Str),
+    Links(Carousel.Event),
+    Photos(Carousel.Event),
+    Looped(Carousel.Event),
+    Jumped(Carousel.Event),
+]
 
-games : List Str
-games = ["Diablo II", "Diablo II: Resurrected"]
+subscriptions = |_model| []
 
-fade_single_slides : List Str
-fade_single_slides = ["Solo A", "Solo B", "Solo C"]
+buttons : [NoButtons, Buttons({ previous : Str, next : Str })]
+buttons = Buttons({ previous: "Previous slide", next: "Next slide" })
 
-fade_multi_slides : List Str
-fade_multi_slides = ["Multi 1", "Multi 2", "Multi 3", "Multi 4"]
+init : Str -> (Model, List(Effect(Msg)))
+init = |_flags| {
+    two = SlidesPerView.from_f64(2.0) ?? SlidesPerView.one
+    model = {
+        games: Carousel.new({ id: "games", slides: ["Diablo II", "Diablo II: Resurrected"], label: Labelled("Games"), role: Group, navigation: buttons }),
+        drinks: Carousel.new({ id: "drinks", slides: ["Whisky", "Cognac", "Rum"], label: LabelledBy("drinks-heading"), navigation: buttons }),
+        fade_single: Carousel.new({ id: "fade_single", slides: ["Solo A", "Solo B", "Solo C"], label: Labelled("Solo fades"), navigation: buttons, transition: Fade }),
+        fade_multi: Carousel.new({ id: "fade_multi", slides: ["Multi 1", "Multi 2", "Multi 3", "Multi 4"], label: Labelled("Multi fades"), navigation: buttons, transition: Fade, slides_per_view: two }),
+        slide_multi: Carousel.new({ id: "slide_multi", slides: ["Pane 1", "Pane 2", "Pane 3", "Pane 4"], label: Labelled("Panes"), navigation: buttons, slides_per_view: two }),
+        picks: Carousel.new({ id: "picks", slides: ["Apple", "Pear"], label: Labelled("Picks"), navigation: buttons }),
+        picked: "",
+        links: Carousel.new({ id: "links", slides: ["first", "second"], label: Labelled("Links"), navigation: buttons }),
+        photos: Carousel.new({ id: "photos", slides: ["crimson", "seagreen", "steelblue"], label: Labelled("Foton"), navigation: buttons, slide_label: "Bild {number} av {count}" }),
+        looped: Carousel.new({ id: "looped", slides: ["Loop 1", "Loop 2", "Loop 3"], label: Labelled("Loops"), navigation: buttons, at_ends: Wrap }),
+        jumped: Carousel.new({ id: "jumped", slides: ["Jump 1", "Jump 2", "Jump 3"], label: Labelled("Jumps"), navigation: buttons, at_ends: Wrap, wraps: Jump }),
+    }
+    (model, [])
+}
 
-slide_multi_slides : List Str
-slide_multi_slides = ["Pane 1", "Pane 2", "Pane 3", "Pane 4"]
+update : Model, Msg -> (Model, List(Effect(Msg)))
+update = |model, msg|
+    match msg {
+        Games(event) => ({ ..model, games: model.games.update(event) }, [])
+        Drinks(event) => ({ ..model, drinks: model.drinks.update(event) }, [])
+        FadeSingle(event) => ({ ..model, fade_single: model.fade_single.update(event) }, [])
+        FadeMulti(event) => ({ ..model, fade_multi: model.fade_multi.update(event) }, [])
+        SlideMulti(event) => ({ ..model, slide_multi: model.slide_multi.update(event) }, [])
+        Picks(event) => ({ ..model, picks: model.picks.update(event) }, [])
+        Picked(name) => ({ ..model, picked: name }, [])
+        Links(event) => ({ ..model, links: model.links.update(event) }, [])
+        Photos(event) => ({ ..model, photos: model.photos.update(event) }, [])
+        Looped(event) => ({ ..model, looped: model.looped.update(event) }, [])
+        Jumped(event) => ({ ..model, jumped: model.jumped.update(event) }, [])
+    }
 
-# These carousels are render-only in the test app (no error recovery), so a bad
-# config is a test-app bug — crash loudly rather than render a silent fallback.
-init_or_crash : Str, Carousel.Config, U64 -> Carousel.State
-init_or_crash = |id, config, slide_count|
-    when Carousel.init({ id, config, slide_count }) is
-        Ok(state) -> state
-        Err(_) -> crash "Invalid ${id} carousel"
+text_slide : Str, U64 -> Html(Msg)
+text_slide = |content, _index| slide_box([text(content)])
 
-init! : Str => Model
-init! = |_flags|
-    config = { Carousel.default_config & navigation: Bool.true }
+# Each pick sits in the middle of its slide, clear of the prev/next buttons,
+# which overlap the slide's edges.
+pick_slide : Str, U64 -> Html(Msg)
+pick_slide = |name, _index| slide_box([button([on_click(Picked(name))], [text("Pick ${name}")])])
 
-    # Initializing a carousel can fail for a few reasons (see documentation).
-    # When that happens we can handle the error or crash.
-    #
-    # If our favorite games don't work, let's just crash:
-    games_carousel =
-        when Carousel.init({ id: "games", config, slide_count: List.len(games) }) is
-            Ok(state) -> state
-            Err(_) -> crash "Invalid games carousel"
+# A link in the middle of its slide, to a fragment, so following it shows in
+# the address without leaving the page.
+link_slide : Str, U64 -> Html(Msg)
+link_slide = |name, _index| slide_box([a([href("#${name}"), style([("padding", "40px")])], [text("Open ${name}")])])
 
-    # Drinks we can do without, so we don't crash, and instead show an error during rendering.
-    drinks_carousel = Carousel.init({ id: "drinks", config, slide_count: List.len(drinks) })
+# A full-slide image, which the browser drags natively unless the carousel
+# stops it.
+photo_slide : Str, U64 -> Html(Msg)
+photo_slide = |colour, index| {
+    svg = "<svg xmlns='http://www.w3.org/2000/svg' width='600' height='200'><rect width='600' height='200' fill='${colour}'/></svg>"
+    img([src("data:image/svg+xml,${svg}"), alt("Photo ${(index + 1).to_str()}"), style([("display", "block"), ("width", "100%"), ("height", "200px")])])
+}
 
-    fade_single_config = { config & is_fade: Bool.true }
-    fade_single_carousel = init_or_crash("fade_single", fade_single_config, List.len(fade_single_slides))
-
-    fade_multi_config = { config & is_fade: Bool.true, slides_per_view: 2.0 }
-    fade_multi_carousel = init_or_crash("fade_multi", fade_multi_config, List.len(fade_multi_slides))
-
-    slide_multi_config = { config & slides_per_view: 2.0 }
-    slide_multi_carousel = init_or_crash("slide_multi", slide_multi_config, List.len(slide_multi_slides))
-
-    { games_carousel, drinks_carousel, fade_single_carousel, fade_multi_carousel, slide_multi_carousel }
-
-update! : Model, Str, List U8 => Action Model
-update! = |model, raw, payload|
-    when Carousel.decode_event(raw, payload) is
-        Ok({ id, event }) ->
-            when id is
-                "games" ->
-                    new_state = Carousel.update(model.games_carousel, event)
-                    Action.update({ model & games_carousel: new_state })
-
-                "drinks" ->
-                    when model.drinks_carousel is
-                        Ok(drinks_carousel) ->
-                            new_state = Carousel.update(drinks_carousel, event)
-                            Action.update({ model & drinks_carousel: Ok(new_state) })
-
-                        _ -> Action.none
-
-                "fade_single" ->
-                    new_state = Carousel.update(model.fade_single_carousel, event)
-                    Action.update({ model & fade_single_carousel: new_state })
-
-                "fade_multi" ->
-                    new_state = Carousel.update(model.fade_multi_carousel, event)
-                    Action.update({ model & fade_multi_carousel: new_state })
-
-                "slide_multi" ->
-                    new_state = Carousel.update(model.slide_multi_carousel, event)
-                    Action.update({ model & slide_multi_carousel: new_state })
-
-                _ ->
-                    Action.none
-
-        Err(_) ->
-            Action.none
-
-render_slides = |content|
-    List.map(
-        content,
-        |slide_text|
-            div(
+slide_box : List(Html(Msg)) -> Html(Msg)
+slide_box = |children|
+    div(
+        [
+            style(
                 [
-                    style(
-                        [
-                            ("display", "flex"),
-                            ("align-items", "center"),
-                            ("justify-content", "center"),
-                            ("height", "200px"),
-                            ("background", "#f0f0f0"),
-                            ("border", "1px solid #ccc"),
-                            ("font-size", "24px"),
-                        ],
-                    ),
+                    ("display", "flex"),
+                    ("align-items", "center"),
+                    ("justify-content", "center"),
+                    ("height", "200px"),
+                    ("background", "#f0f0f0"),
+                    ("border", "1px solid #ccc"),
+                    ("font-size", "24px"),
                 ],
-                [text(slide_text)],
             ),
+        ],
+        children,
     )
 
-render : Model -> Html Model
+render : Model -> Html(Msg)
 render = |model|
-
     div(
         [style([("max-width", "600px"), ("margin", "40px auto"), ("padding", "20px")])],
         [
             h1([], [text("Carousel Test")]),
-            Carousel.view(model.games_carousel, render_slides(games)),
-            when model.drinks_carousel is
-                Ok(drinks_carousel) ->
-                    Carousel.view(drinks_carousel, render_slides(drinks))
-
-                Err(e) ->
-                    p([], [text("Drinks carousel failed to initialize due to: ${Inspect.to_str(e)}")]),
-            Carousel.view(model.fade_single_carousel, render_slides(fade_single_slides)),
-            Carousel.view(model.fade_multi_carousel, render_slides(fade_multi_slides)),
-            Carousel.view(model.slide_multi_carousel, render_slides(slide_multi_slides)),
+            model.games.view(text_slide, |event| Games(event)),
+            # Navigation outside the carousel sends the carousel's own events.
+            button([id("games-last"), on_click(Games(Carousel.go_to(1)))], [text("Last game")]),
+            h2([id("drinks-heading")], [text("Drinks")]),
+            model.drinks.view(text_slide, |event| Drinks(event)),
+            model.fade_single.view(text_slide, |event| FadeSingle(event)),
+            model.fade_multi.view(text_slide, |event| FadeMulti(event)),
+            model.slide_multi.view(text_slide, |event| SlideMulti(event)),
+            model.picks.view(pick_slide, |event| Picks(event)),
+            p([id("picked")], [text("Picked: ${model.picked}")]),
+            model.links.view(link_slide, |event| Links(event)),
+            model.photos.view(photo_slide, |event| Photos(event)),
+            model.looped.view(text_slide, |event| Looped(event)),
+            model.jumped.view(text_slide, |event| Jumped(event)),
         ],
     )
