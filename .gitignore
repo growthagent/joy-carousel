@@ -14,4 +14,3 @@ generated-docs/
 *.ll
 tests/app/www/app.wasm
 tests/app/www/runtime.js
-tests/app/server/main
