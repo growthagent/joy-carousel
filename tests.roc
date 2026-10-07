@@ -5,13 +5,15 @@
 ##    package from outside, the way an app does, and renders the view
 ##    through joy-html.
 ## 2. The browser suite. The test app (tests/app) is built to wasm against the
-##    Joy platform, the test server is built and started, and every
-##    tests/*_test.roc drives the page in Chromium through roc-playwright.
+##    Joy platform, the test server is started, and every tests/*_test.roc
+##    drives the page in Chromium through roc-playwright.
+##
+## The probe and the server run through `roc` rather than as binaries built
+## first, the way Joy runs its own, so no path has to name a Windows `.exe`.
 ##
 ## Run from the repository root with `roc` and `playwright` in place. CI runs
-## this via
-## `nix develop -c ./tests.roc`. Accepts a filename pattern (substring) and
-## --fail-fast, e.g. `./tests.roc drag`.
+## this via `nix develop -c ./tests.roc`. Accepts a filename pattern
+## (substring) and --fail-fast, e.g. `./tests.roc drag`.
 ##
 ## Optional env: ROC_OPT (default speed), ROC_SPEC_MAX_WORKERS (default 4),
 ## CAROUSEL_TEST_PORT (default 9000).
@@ -35,7 +37,7 @@ import spec.Wait
 client_main = "tests/app/client/main.roc"
 client_wasm = "tests/app/www/app.wasm"
 client_runtime = "tests/app/www/runtime.js"
-server_bin = "tests/app/server/main"
+server_main = "tests/app/server/main.roc"
 
 main! : List(OsStr) => Try({}, _)
 main! = |os_args| {
@@ -46,7 +48,7 @@ main! = |os_args| {
 
     # A filtered run is someone iterating on a browser spec, so skip the probes.
     if pattern == "" {
-        run_probe!("tests/probes/carousel_probe.roc", "tests/probes/carousel_probe", opt)?
+        run_probe!("tests/probes/carousel_probe.roc", opt)?
     }
 
     build_test_app!(opt)?
@@ -64,16 +66,19 @@ main! = |os_args| {
 
     # The server is stateless (all carousel state lives in the page and every
     # spec navigates fresh), so one instance serves every worker. Leashed, so
-    # it dies with this script however the run ends.
-    server = Cmd.new_str(server_bin)
+    # it dies with this script however the run ends, and takes the server roc
+    # runs down with it.
+    server = Cmd.new_str("roc")
+        .args_str(["--opt=${opt}", server_main])
         .env_str("ROC_BASIC_WEBSERVER_PORT", port)
         .spawn_leashed!() ? |e| ServerSpawnFailed(e)
 
+    # roc compiles the server before it starts, so this allows a minute.
     Wait.for_server!(
         { http_send!: Http.send!, sleep!: Sleep.millis! },
         url,
         {
-            max_attempts: 100,
+            max_attempts: 600,
             delay_ms: 100,
             request_timeout_ms: 5_000,
             headers: [],
@@ -108,7 +113,7 @@ main! = |os_args| {
         fail_fast,
     }, pattern)?
 
-    _ = server.kill!()
+    server.close!() ?? {}
 
     passed = results.count_if(|r| r.passed)
     total = results.len()
@@ -166,14 +171,12 @@ expect joy_hash_of("app [Model] {\n    pf: platform \"https://github.com/a/joy/r
 expect joy_hash_of("app [Model] {\n    pf: platform \"../../joy/platform/main.roc\",\n}") == Err(NoJoyRelease)
 expect joy_hash_of("app [Model] {}") == Err(NoJoyRelease)
 
-## Build a probe app and run it. The probes print one PASS/FAIL line per check
-## and exit non-zero on a failure.
-run_probe! : Str, Str, Str => Try({}, _)
-run_probe! = |src, out, opt| {
+## Run a probe app. The probes print one PASS/FAIL line per check and exit
+## non-zero on a failure.
+run_probe! : Str, Str => Try({}, _)
+run_probe! = |src, opt| {
     Stdout.line!("Running ${src}...")?
-    roc_build!(["--opt=${opt}", "--output=${out}", src], out)?
-    code = Cmd.new_str("./${out}").exec_exit_code!()?
-    _ = Path.utf8(out).delete!()
+    code = Cmd.new_str("roc").args_str(["--opt=${opt}", src]).exec_exit_code!()?
     if code == 0 {
         Ok({})
     } else {
@@ -181,8 +184,8 @@ run_probe! = |src, out, opt| {
     }
 }
 
-## The test app: the client compiled to wasm against the Joy platform, Joy's
-## JS runtime next to it, and the server that serves both.
+## The test app's client: compiled to wasm against the Joy platform, with
+## Joy's JS runtime next to it, for the server to serve.
 build_test_app! : Str => Try({}, _)
 build_test_app! = |opt| {
     Stdout.line!("Building the test app...")?
@@ -201,8 +204,7 @@ build_test_app! = |opt| {
     joy_hash = joy_hash_of(header) ? |_| NoJoyReleaseIn(client_main)
     joy_runtime = "${roc_cache_dir!()}/packages/${joy_hash}/www/runtime.js"
     Path.utf8(joy_runtime).copy!(Path.utf8(client_runtime)) ? |e| CouldNotCopyJoyRuntime(joy_runtime, e)
-
-    roc_build!(["--opt=${opt}", "--output=${server_bin}", "tests/app/server/main.roc"], server_bin)
+    Ok({})
 }
 
 ## `roc build` exits 2 when it only found warnings and can exit 0 without
