@@ -9,9 +9,7 @@ app [Model, Msg, init, update, render, subscriptions] {
     pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc1/5gS3GJgH3zis8uU9z7J9UnsDbJdh4EccNxmP71omoNiN.tar.zst",
     # Must be the same joy-html release the Joy platform uses, see "Requirements" below
     html: "https://github.com/niclas-ahden/joy-html/releases/download/0.17.0/AcmwFzyfbsf5RALWNdX6cXw1cuuDXt96YfcysNqgFqoG.tar.zst",
-    # The first release of joy-carousel for the zig-based Roc compiler is not
-    # out yet, see "Status" below.
-    carousel: "https://github.com/niclas-ahden/joy-carousel/releases/download/<version>/<hash>.tar.zst",
+    carousel: "https://github.com/growthagent/joy-carousel/releases/download/0.8.0-rc1/FK62jN6nXuk8iTifFHFLWP7zihgeN1JzDHH3jdcM1Y6p.tar.zst",
 }
 
 import html.Html exposing [div, text]
@@ -152,4 +150,4 @@ roc test package/main.roc
 
 ## Status
 
-`joy-carousel` is usable but still in development. Expect breaking changes as the API evolves. Releases up to 0.7.0 are for the old Rust-based Roc compiler. The next release will be the first one for the new Zig-based compiler.
+`joy-carousel` is usable but still in development. Expect breaking changes as the API evolves. Releases up to 0.7.0 are for the old Rust-based Roc compiler, and 0.8.0 is the first one for the new Zig-based compiler.
