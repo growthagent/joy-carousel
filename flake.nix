@@ -46,7 +46,9 @@
               roc
               pkgs.watchexec
               # The browser suite (tests/*_test.roc) drives Chromium through
-              # roc-playwright.
+              # roc-playwright. Its version comes from the nixpkgs in flake.lock.
+              # Keep the npm version in .github/scripts/setup.sh, which the
+              # Windows CI legs install, at the same version.
               pkgs.playwright-test
               pkgs.nodejs
             ];

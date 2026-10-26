@@ -3,7 +3,7 @@
 ## tests/app/www by tests.roc). Started once from the repo root by tests.roc,
 ## which passes the port in the ROC_BASIC_WEBSERVER_PORT environment variable.
 app [Context, program] {
-    pf: platform "https://github.com/niclas-ahden/basic-webserver/releases/download/0.18.0/DuwGgLMnPKEVKXR5KuwtZRAtgap8TSp4GTnFf8ANHtXB.tar.zst",
+    pf: platform "https://github.com/niclas-ahden/basic-webserver/releases/download/0.20.0/8gawVMwxgrwBefBfG9kAMVeJQ68b8kd1tTAAsX1xUtTe.tar.zst",
     http: "https://github.com/roc-lang/http/releases/download/2.0.0/6ZUwqYhCS8PU9Mo6MF7oV82ET2o7KYb57CLKDq4cq4sS.tar.zst",
 }
 

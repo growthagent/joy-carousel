@@ -18,8 +18,8 @@
 ## Optional env: ROC_OPT (default speed), ROC_SPEC_MAX_WORKERS (default 4),
 ## CAROUSEL_TEST_PORT (default 9000).
 app [main!] {
-    pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.28.0/AP9SGT1yrhCKcFxKcoA5tBkNCM6ibBjBxcQGMTb6krev.tar.zst",
-    spec: "https://github.com/niclas-ahden/roc-spec/releases/download/0.6.0/9ThTkhd7zrviwQpM3LvGd7pvzGhr4ZXNmWJV7pTJc9AJ.tar.zst",
+    pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.30.0/6XAUy48Jp34GANurMrMf74DtF7NdpkhnqFLHE4gHNzJy.tar.zst",
+    spec: "https://github.com/niclas-ahden/roc-spec/releases/download/0.7.0/BGjQKbG9U3V8cH6mRbypUAFVqFoVEu6n9bsA3QmFL1f4.tar.zst",
 }
 
 import pf.Cmd
@@ -30,6 +30,7 @@ import pf.Path
 import pf.Sleep
 import pf.Stderr
 import pf.Stdout
+import pf.System
 import pf.Utc
 import spec.Spec
 import spec.Wait
@@ -39,6 +40,28 @@ client_www = "tests/app/www"
 client_wasm = "${client_www}/app.wasm"
 client_runtime = "${client_www}/runtime.js"
 server_main = "tests/app/server/main.roc"
+
+## The platform functions roc-spec runs on, basic-cli's own. A test killed on
+## timeout takes its browser with it because it spawns leashed.
+spec_hooks = {
+    new: Cmd.new,
+    os_str: OsStr.from_str,
+    spawn!: Cmd.Command.spawn_leashed!,
+    poll!: Cmd.Child.poll!,
+    wait!: Cmd.Child.wait!,
+    kill!: Cmd.Child.kill!,
+    close!: Cmd.Child.close!,
+    path: Path.utf8,
+    list!: Path.list!,
+    print!: Stdout.line!,
+    now!: Utc.now!,
+    sleep!: Sleep.millis!,
+    env_var!: Env.var_str!,
+    # WORKAROUND: a lambda rather than `Http.send!` itself, because roc-spec
+    # passing a bare `{}` as its `SendOptions` crashes Roc. Pass `Http.send!`
+    # once https://github.com/roc-lang/roc/issues/12606 is fixed.
+    http_send!: |request| Http.send!(request, {}),
+}
 
 main! : List(OsStr) => Try({}, _)
 main! = |os_args| {
@@ -60,7 +83,7 @@ main! = |os_args| {
     # Anything already answering here would pass the readiness check below in
     # the new server's place, and the specs would run against it instead.
     probe = { max_attempts: 1, delay_ms: 0, request_timeout_ms: 1_000, headers: [] }
-    if Wait.for_server!({ http_send!: Http.send!, sleep!: Sleep.millis! }, url, probe).is_ok() {
+    if Wait.for_server!(spec_hooks, url, probe).is_ok() {
         Stderr.line!("error: something is already listening on ${url}, set CAROUSEL_TEST_PORT to a free port")?
         Err(PortInUse(url))?
     }
@@ -69,14 +92,14 @@ main! = |os_args| {
     # spec navigates fresh), so one instance serves every worker. Leashed, so
     # it dies with this script however the run ends, and takes the server roc
     # runs down with it.
-    server = Cmd.new_str("roc")
-        .args_str(["--opt=${opt}", server_main])
-        .env_str("ROC_BASIC_WEBSERVER_PORT", port)
+    server = Cmd.new(OsStr.from_str("roc"))
+        .args(["--opt=${opt}", server_main].map(OsStr.from_str))
+        .env(OsStr.from_str("ROC_BASIC_WEBSERVER_PORT"), OsStr.from_str(port))
         .spawn_leashed!() ? |e| ServerSpawnFailed(e)
 
     # roc compiles the server before it starts, so this allows a minute.
     Wait.for_server!(
-        { http_send!: Http.send!, sleep!: Sleep.millis! },
+        spec_hooks,
         url,
         {
             max_attempts: 600,
@@ -88,24 +111,8 @@ main! = |os_args| {
 
     workers = U16.from_str(env_or!("ROC_SPEC_MAX_WORKERS", "4")).ok_or(4)
 
-    effects = {
-        spawn_test!: |file, envs|
-            Cmd.new_str("roc")
-                .args_str(["--opt=${opt}", file])
-                .envs_str(envs)
-                .stdout(Capture)
-                .stderr(Capture)
-                .spawn_leashed!(),
-        try_wait!: Cmd.Child.try_wait!,
-        kill!: Cmd.Child.kill!,
-        wait!: Cmd.Child.wait!,
-        list_dir!: |dir| Path.list!(Path.utf8(dir)).map_ok(|entries| entries.map(Path.display)),
-        print!: Stdout.line!,
-        utc_now!: Utc.now!,
-        sleep_millis!: Sleep.millis!,
-    }
-
-    results = Spec.run_filtered!(effects, "tests", {
+    results = Spec.run_filtered!(spec_hooks, "tests", {
+        test_command: ["roc", "--opt=${opt}"],
         max_workers: workers,
         worker_envs: |_index| [("CAROUSEL_TEST_URL", url)],
         before_each!: |_index| Ok({}),
@@ -147,10 +154,11 @@ roc_cache_dir! = || {
     xdg_cache_home = env_or!("XDG_CACHE_HOME", "")
     if xdg_cache_home != "" {
         "${xdg_cache_home}/roc"
-    } else if Env.platform!().os == WINDOWS {
-        "${env_or!("LOCALAPPDATA", "")}/roc"
     } else {
-        "${env_or!("HOME", "")}/.cache/roc"
+        match System.target!().os() {
+            Windows(_) => "${env_or!("LOCALAPPDATA", "")}/roc"
+            _ => "${env_or!("HOME", "")}/.cache/roc"
+        }
     }
 }
 
@@ -177,12 +185,10 @@ expect joy_hash_of("app [Model] {}") == Err(NoJoyRelease)
 run_probe! : Str, Str => Try({}, _)
 run_probe! = |src, opt| {
     Stdout.line!("Running ${src}...")?
-    code = Cmd.new_str("roc").args_str(["--opt=${opt}", src]).exec_exit_code!()?
-    if code == 0 {
-        Ok({})
-    } else {
-        Err(ProbeFailed(src))
-    }
+    Cmd.new(OsStr.from_str("roc"))
+        .args(["--opt=${opt}", src].map(OsStr.from_str))
+        .call!()
+        .map_err(|_| ProbeFailed(src))
 }
 
 ## The test app's client: compiled to wasm against the Joy platform, with
@@ -218,7 +224,12 @@ build_test_app! = |opt| {
 roc_build! : List(Str), Str => Try({}, _)
 roc_build! = |args, out| {
     _ = Path.utf8(out).delete!()
-    code = Cmd.new_str("roc").args_str(["build"].concat(args)).exec_exit_code!()?
+    output = Cmd.new(OsStr.from_str("roc")).args(["build"].concat(args).map(OsStr.from_str)).inherit_stdio().run!()?
+    code =
+        match output.status {
+            Exited(c) => c
+            Signaled(_) => -1
+        }
     built = Path.utf8(out).is_file!() ?? Bool.False
     if built and (code == 0 or code == 2) {
         Ok({})

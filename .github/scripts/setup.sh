@@ -14,12 +14,13 @@
 set -euo pipefail
 
 if [ "$RUNNER_OS" = Windows ]; then
-  # Keep the version in step with the dev shell's playwright-test
+  # Keep the version in step with the dev shell's playwright-test in
+  # flake.nix, whose version the nixpkgs in flake.lock decides
   # (`nix develop -c playwright --version`). roc-playwright talks to
   # Playwright's private driver protocol, which upstream may change in any
   # release, so a runner and a developer machine disagreeing about the
   # version means they are testing two different protocols.
-  npm install -g "playwright@1.63.0"
+  npm install -g "playwright@1.64.1"
   playwright install chromium
   playwright --version
   exit 0
