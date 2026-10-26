@@ -1,6 +1,6 @@
 app [Model, Msg, init, update, render, subscriptions] {
     pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc1/5gS3GJgH3zis8uU9z7J9UnsDbJdh4EccNxmP71omoNiN.tar.zst",
-    html: "https://github.com/niclas-ahden/joy-html/releases/download/0.17.0/AcmwFzyfbsf5RALWNdX6cXw1cuuDXt96YfcysNqgFqoG.tar.zst",
+    html: "https://github.com/niclas-ahden/joy-html/releases/download/0.17.1/AcmwFzyfbsf5RALWNdX6cXw1cuuDXt96YfcysNqgFqoG.tar.zst",
     carousel: "../../../package/main.roc",
 }
 
