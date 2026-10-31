@@ -28,7 +28,7 @@ init! = || {
                 }
         }
     port = U16.from_str(port_str) ? |_| InvalidPort(port_str)
-    Ok({ config: Server.default_config.with_listen({ host: "127.0.0.1", port: port }), context: {} })
+    Ok({ config: Server.with_listen(Server.default_config, { host: "127.0.0.1", port: port }), context: {} })
 }
 
 respond! : Server.Request, Context => Try(Server.Outcome, [ServerErr(Str)])

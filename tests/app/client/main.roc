@@ -1,6 +1,6 @@
-app [Model, Msg, init, update, render, subscriptions] {
-    pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc1/5gS3GJgH3zis8uU9z7J9UnsDbJdh4EccNxmP71omoNiN.tar.zst",
-    html: "https://github.com/niclas-ahden/joy-html/releases/download/0.17.1/AcmwFzyfbsf5RALWNdX6cXw1cuuDXt96YfcysNqgFqoG.tar.zst",
+app [Model, Msg, init, update, view, subscriptions] {
+    pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc3/6f2PcHw5gh6nhBfVpToURwNMhrLGwyQQJrKYLjKi4GZk.tar.zst",
+    html: "https://github.com/growthagent/joy-html/releases/download/0.18.0-rc1/6eTqakHk59tsBefdx2VPuYDVZxG8SoEtzE74e7MzyoBq.tar.zst",
     carousel: "../../../package/main.roc",
 }
 
@@ -132,8 +132,8 @@ slide_box = |children|
         children,
     )
 
-render : Model -> Html(Msg)
-render = |model|
+view : Model -> Html(Msg)
+view = |model|
     div(
         [style([("max-width", "600px"), ("margin", "40px auto"), ("padding", "20px")])],
         [
