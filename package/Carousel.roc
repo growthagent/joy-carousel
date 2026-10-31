@@ -111,6 +111,40 @@ Carousel(slide) :: {
         duration_ms,
     }
 
+    ## What a carousel is when encoded, for a page model that holds one:
+    ## every field but the drag, which is transient and never travels, so a
+    ## decoded carousel is at rest. The compiler derives this type's codecs,
+    ## and the carousel's own, below, delegate to them.
+    Encoded(slide) := {
+        id : Str,
+        items : List(slide),
+        position : U64,
+        transition : [Slide, Fade],
+        slides_per_view : SlidesPerView,
+        navigation : [NoButtons, Buttons({ previous : Str, next : Str })],
+        at_ends : [Stop, Wrap],
+        wraps : [Slide, Jump],
+        instant : Bool,
+        label : [Labelled(Str), LabelledBy(Str)],
+        role : [Region, Group],
+        slide_label : Str,
+        drag_threshold_px : U32,
+        duration_ms : U32,
+    }.{
+        parser_for : _
+        encoder_for : _
+    }
+
+    encoder_for = |encoding| {
+        encode = Encoded.encoder_for(encoding)
+        |carousel, state| encode(to_encoded(carousel), state)
+    }
+
+    parser_for = |format| {
+        parse = Encoded.parser_for(format)
+        |state| parse(state).map_ok(|parsed| { value: from_encoded(parsed.value), rest: parsed.rest })
+    }
+
     ## What a carousel's [view] sends through the `to_msg` the app passes, for
     ## the app to hand back to [update]. Navigation the app renders itself
     ## sends [next], [previous] or [go_to]:
@@ -376,6 +410,45 @@ jumps = |carousel, position| {
         (Jump, Slide) => distance > 1
         _ => Bool.False
     }
+}
+
+## The carousel as it is encoded: see `Encoded`.
+to_encoded : Carousel(slide) -> Carousel.Encoded(slide)
+to_encoded = |c| {
+    id: c.id,
+    items: c.items,
+    position: c.position,
+    transition: c.transition,
+    slides_per_view: c.slides_per_view,
+    navigation: c.navigation,
+    at_ends: c.at_ends,
+    wraps: c.wraps,
+    instant: c.instant,
+    label: c.label,
+    role: c.role,
+    slide_label: c.slide_label,
+    drag_threshold_px: c.drag_threshold_px,
+    duration_ms: c.duration_ms,
+}
+
+## A carousel from its encoded form, at rest.
+from_encoded : Carousel.Encoded(slide) -> Carousel(slide)
+from_encoded = |w| {
+    id: w.id,
+    items: w.items,
+    position: w.position,
+    drag: Resting,
+    transition: w.transition,
+    slides_per_view: w.slides_per_view,
+    navigation: w.navigation,
+    at_ends: w.at_ends,
+    wraps: w.wraps,
+    instant: w.instant,
+    label: w.label,
+    role: w.role,
+    slide_label: w.slide_label,
+    drag_threshold_px: w.drag_threshold_px,
+    duration_ms: w.duration_ms,
 }
 
 ## How far a press has to move to become a drag. Until then the track stays
@@ -931,4 +1004,37 @@ expect {
 expect {
     # Going to a slide slides, however far away it is.
     render(jumping.update(Carousel.previous).update(Carousel.go_to(0))).contains("translate3d(0%, 0, 0); transition: transform 300ms ease-out")
+}
+
+# --- encoded ---
+
+expect {
+    back : Try(Carousel(Str), _)
+    back = Json.parse(Json.to_str(abc))
+    match back {
+        Ok(c) => c.slides() == letters and c.active_index() == 0 and is_resting(c)
+        Err(_) => Bool.False
+    }
+}
+
+# A carousel in the middle of a drag travels at rest: the drag is transient.
+expect {
+    back : Try(Carousel(Str), _)
+    back = Json.parse(Json.to_str(drag_by(abc, -30.0)))
+    match back {
+        Ok(c) => is_resting(c) and c.active_index() == 0
+        Err(_) => Bool.False
+    }
+}
+
+# Every setting survives: a wrapping fade, two slides per view, custom
+# buttons, on its second slide, renders the same before and after.
+expect {
+    carousel = Carousel.new({ id: "encoded", slides: ["A", "B", "C"], label: LabelledBy("heading"), transition: Fade, slides_per_view: two_per_view, navigation: Buttons({ previous: "Back", next: "Onward" }), at_ends: Wrap, wraps: Jump, duration_ms: 500 }).update(Carousel.next)
+    back : Try(Carousel(Str), _)
+    back = Json.parse(Json.to_str(carousel))
+    match back {
+        Ok(c) => render(c) == render(carousel) and c.active_index() == 1
+        Err(_) => Bool.False
+    }
 }
