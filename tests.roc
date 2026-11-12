@@ -16,13 +16,14 @@
 ## (substring) and --fail-fast, e.g. `./tests.roc drag`.
 ##
 ## Optional env: ROC_OPT (default speed), ROC_SPEC_MAX_WORKERS (default 4),
-## CAROUSEL_TEST_PORT (default 9000).
+## CAROUSEL_TEST_PORT (default: a free port the operating system picks).
 app [main!] {
     pf: platform "https://github.com/niclas-ahden/basic-cli/releases/download/0.31.0/Ff3fkK1TjYTVxMj9V21FP24ojTJXYk314Fbo1whBZ6Yf.tar.zst",
     spec: "https://github.com/niclas-ahden/roc-spec/releases/download/0.7.0/BGjQKbG9U3V8cH6mRbypUAFVqFoVEu6n9bsA3QmFL1f4.tar.zst",
 }
 
 import pf.Cmd
+import pf.Duration
 import pf.Env
 import pf.Http
 import pf.OsStr
@@ -31,6 +32,7 @@ import pf.Sleep
 import pf.Stderr
 import pf.Stdout
 import pf.System
+import pf.Tcp
 import pf.Utc
 import spec.Spec
 import spec.Wait
@@ -77,7 +79,11 @@ main! = |os_args| {
 
     build_test_app!(opt)?
 
-    port = env_or!("CAROUSEL_TEST_PORT", "9000")
+    port =
+        match Env.var_str!("CAROUSEL_TEST_PORT") {
+            Ok(chosen) => chosen
+            Err(_) => free_port!({})?.to_str()
+        }
     url = "http://127.0.0.1:${port}"
 
     # Anything already answering here would pass the readiness check below in
@@ -237,4 +243,14 @@ roc_build! = |args, out| {
         Stderr.line!("error: roc build failed for ${out} (exit code ${code.to_str()})")?
         Err(BuildFailed(out))
     }
+}
+
+## A port that is free now. The operating system picks it, so the run never
+## collides with another server on this machine.
+free_port! : {} => Try(U64, [NoFreePort(Str)])
+free_port! = |{}| {
+    probe = Tcp.listen!("127.0.0.1", 0, Duration.seconds(5)) ? |e| NoFreePort(Str.inspect(e))
+    port = probe.local_port!() ? |e| NoFreePort(Str.inspect(e))
+    probe.close!() ? |e| NoFreePort(Str.inspect(e))
+    Ok(port.to_u64())
 }
