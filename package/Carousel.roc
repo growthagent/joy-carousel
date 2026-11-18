@@ -93,9 +93,9 @@ Carousel(slide) :: {
 
     ## A carousel on its first slide.
     new : Options(slide) -> Carousel(slide)
-    new = |{ id, slides, label, role, transition, slides_per_view, navigation, at_ends, wraps, slide_label, drag_threshold_px, duration_ms }| {
+    new = |{ id, slides: given_slides, label, role, transition, slides_per_view, navigation, at_ends, wraps, slide_label, drag_threshold_px, duration_ms }| {
         id,
-        items: slides,
+        items: given_slides,
         position: 0,
         drag: Resting,
         transition,
