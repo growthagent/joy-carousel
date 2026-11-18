@@ -207,10 +207,10 @@ build_test_app! = |opt| {
     # checkout has no such directory and the linker cannot write into it.
     Path.utf8(client_www).create_all!() ? |e| CouldNotCreateDir(client_www, e)
 
-    # The memory and stack flags are the ones Joy's own build.roc passes, see
-    # the notes there.
+    # The stack flag is the one Joy's own build.roc passes, see the notes
+    # there. Roc sizes the memory itself.
     roc_build!(
-        ["--opt=${opt}", "--target=wasm32", "--wasm-memory=0", "--wasm-stack-size=1048576", "--output=${client_wasm}", client_main],
+        ["--opt=${opt}", "--target=wasm32", "--wasm-stack-size=1048576", "--output=${client_wasm}", client_main],
         client_wasm,
     )?
 
