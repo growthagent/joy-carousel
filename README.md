@@ -6,7 +6,7 @@ A carousel/slider component for [Joy](https://github.com/growthagent/joy) applic
 
 ```roc
 app [Model, Msg, init, update, render, subscriptions] {
-    pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc6/C5LQnNqF9EBuhTKKHTyUTPAUH5wv9Wd82otSSSaVcJb3.tar.zst",
+    pf: platform "https://github.com/growthagent/joy/releases/download/0.35.0-rc7/BvoLKQeMMYnxFHp7YUmfoLFVCfGYe9wehj5VqNUoGQxu.tar.zst",
     # Must be the same joy-html release the Joy platform uses, see "Requirements" below
     html: "https://github.com/growthagent/joy-html/releases/download/0.18.0-rc2/6XAQypURmG12GNMHHZmjcXVGtctYy52mmPZoaUMWejRK.tar.zst",
     carousel: "https://github.com/growthagent/joy-carousel/releases/download/0.8.0-rc3/7x5RVYKwyZQpQEugFbZdQMKaZEjQLjGKEzGuMQFfAitf.tar.zst",
